@@ -24,20 +24,15 @@
     <div class="col-md-3"><button class="btn btn-primary w-100" type="submit">Filter</button></div>
 </form>
 <div class="card shadow-sm p-4">
-    <table class="table table-striped">
+    {% if incomes %}<div class="table-responsive"><table class="table table-striped mobile-card-table">
         <thead><tr><th>Date</th><th>Category</th><th>Amount</th><th>Currency</th><th>Description</th><th>Action</th></tr></thead>
         <tbody>
             {% for income in incomes %}
             <tr>
-                <td>{{ income.date }}</td>
-                <td>{{ income.category.name }}</td>
-                <td>{{ income.currency_symbol }}{{ income.amount }}</td>
-                <td>{{ income.get_currency_display }}</td>
-                <td>{{ income.description }}</td>
-                <td><a class="btn btn-sm btn-outline-primary" href="{% url 'income_update' income.id %}">Edit</a> <a class="btn btn-sm btn-outline-danger" href="{% url 'income_delete' income.id %}">Delete</a></td>
+                <td data-label="Date">{{ income.date }}</td><td data-label="Category">{{ income.category.name }}</td><td data-label="Amount">{{ income.currency_symbol }}{{ income.amount }}</td><td data-label="Currency">{{ income.get_currency_display }}</td><td data-label="Description">{{ income.description|default:'—' }}</td><td data-label="Actions"><a class="btn btn-sm btn-outline-primary" href="{% url 'income_update' income.id %}">Edit</a> <a class="btn btn-sm btn-outline-danger" href="{% url 'income_delete' income.id %}">Delete</a></td>
             </tr>
-            {% empty %}<tr><td colspan="6">No income entries yet.</td></tr>{% endfor %}
+            {% endfor %}
         </tbody>
-    </table>
+    </table></div>{% else %}<div class="empty-state"><div class="empty-state-icon success"><i class="bi bi-cash-coin"></i></div><h3>Start tracking income</h3><p>Add your first income entry to see earnings trends and accurate monthly totals.</p><a class="btn btn-success" href="{% url 'income_create' %}"><i class="bi bi-plus-lg me-1"></i>Add income</a></div>{% endif %}
 </div>
 {% endblock %}

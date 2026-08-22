@@ -26,21 +26,15 @@
     <div class="col-md-2"><button class="btn btn-primary w-100" type="submit">Filter</button></div>
 </form>
 <div class="card shadow-sm p-4">
-    <table class="table table-striped">
+    {% if expenses %}<div class="table-responsive"><table class="table table-striped mobile-card-table">
         <thead><tr><th>Date</th><th>Category</th><th>Amount</th><th>Currency</th><th>Description</th><th>Method</th><th>Action</th></tr></thead>
         <tbody>
             {% for expense in expenses %}
             <tr>
-                <td>{{ expense.date }}</td>
-                <td>{{ expense.category.name }}</td>
-                <td>{{ expense.currency_symbol }}{{ expense.amount }}</td>
-                <td>{{ expense.get_currency_display }}</td>
-                <td>{{ expense.description }}</td>
-                <td>{{ expense.payment_method }}</td>
-                <td><a class="btn btn-sm btn-outline-primary" href="{% url 'expense_update' expense.id %}">Edit</a> <a class="btn btn-sm btn-outline-danger" href="{% url 'expense_delete' expense.id %}">Delete</a></td>
+                <td data-label="Date">{{ expense.date }}</td><td data-label="Category">{{ expense.category.name }}</td><td data-label="Amount">{{ expense.currency_symbol }}{{ expense.amount }}</td><td data-label="Currency">{{ expense.get_currency_display }}</td><td data-label="Description">{{ expense.description|default:'—' }}</td><td data-label="Method">{{ expense.payment_method|default:'—' }}</td><td data-label="Actions"><a class="btn btn-sm btn-outline-primary" href="{% url 'expense_update' expense.id %}">Edit</a> <a class="btn btn-sm btn-outline-danger" href="{% url 'expense_delete' expense.id %}">Delete</a></td>
             </tr>
-            {% empty %}<tr><td colspan="7">No expenses yet.</td></tr>{% endfor %}
+            {% endfor %}
         </tbody>
-    </table>
+    </table></div>{% else %}<div class="empty-state"><div class="empty-state-icon danger"><i class="bi bi-receipt"></i></div><h3>Track your first expense</h3><p>Record an expense to unlock category insights, reports, and budget progress.</p><a class="btn btn-danger" href="{% url 'expense_create' %}"><i class="bi bi-plus-lg me-1"></i>Add expense</a></div>{% endif %}
 </div>
 {% endblock %}

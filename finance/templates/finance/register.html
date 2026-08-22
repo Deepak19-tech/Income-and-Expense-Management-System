@@ -1,14 +1,21 @@
 {% extends 'finance/base.html' %}
 {% block title %}Register{% endblock %}
+{% block body_class %}auth-page{% endblock %}
 {% block content %}
-<div class="row justify-content-center">
-    <div class="col-md-7">
+<div class="row justify-content-center auth-shell">
+    <div class="col-xl-10">
         {% load static %}
-        <div class="card shadow-sm p-4">
-            <div class="text-center mb-3">
-                <img src="{% static 'img/logo.svg' %}" alt="HisabKitab" height="80">
-            </div>
-            <h2 class="mb-4">Create Account</h2>
+        <div class="auth-panel auth-panel-register">
+            <section class="auth-intro">
+                <img src="{% static 'img/logo.svg' %}" alt="HisabKitab" class="auth-logo">
+                <span class="eyebrow"><i class="bi bi-stars"></i> Start with clarity</span>
+                <h1>Build better money habits.</h1>
+                <p>Create your account and turn everyday transactions into a clearer financial story.</p>
+            </section>
+            <section class="auth-form-panel">
+            <span class="eyebrow"><i class="bi bi-person-plus"></i> Get started</span>
+            <h2>Create your account</h2>
+            <p class="text-muted mb-4">It only takes a moment.</p>
             <form method="post">
                 {% csrf_token %}
                 {% for field in form %}
@@ -22,6 +29,8 @@
                 {% endfor %}
                 <button class="btn btn-success w-100" type="submit">Register</button>
             </form>
+            <p class="mt-4 mb-0">Already have an account? <a href="{% url 'login' %}">Sign in</a></p>
+            </section>
         </div>
     </div>
 </div>
