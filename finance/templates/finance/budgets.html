@@ -1,0 +1,25 @@
+{% extends 'finance/base.html' %}
+{% block title %}Budgets{% endblock %}
+{% block content %}
+<h2 class="mb-4">Budgets</h2>
+<div class="card shadow-sm p-4">
+    <form method="post" class="row g-3 mb-4">
+        {% csrf_token %}
+        {% for field in form %}
+        <div class="col-md-4">
+            <label class="form-label">{{ field.label }}</label>
+            {{ field }}
+        </div>
+        {% endfor %}
+        <div class="col-md-12"><button class="btn btn-primary" type="submit">Save Budget</button></div>
+    </form>
+    <table class="table table-striped">
+        <thead><tr><th>Category</th><th>Month</th><th>Limit</th></tr></thead>
+        <tbody>
+            {% for budget in budgets %}
+            <tr><td>{{ budget.category.name }}</td><td>{{ budget.month }}</td><td>{{ current_currency_symbol }}{{ budget.amount_limit }}</td></tr>
+            {% empty %}<tr><td colspan="3">No budgets set yet.</td></tr>{% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

@@ -1,0 +1,22 @@
+{% extends 'finance/base.html' %}
+{% block title %}{{ mode }} Income{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-7">
+        <div class="card shadow-sm p-4">
+            <h2 class="mb-4">{{ mode }} Income</h2>
+            <form method="post" enctype="multipart/form-data">
+                {% csrf_token %}
+                {% for field in form %}
+                <div class="mb-3">
+                    <label class="form-label">{{ field.label }}</label>
+                    {{ field }}
+                    {% if field.errors %}<div class="text-danger small">{{ field.errors|striptags }}</div>{% endif %}
+                </div>
+                {% endfor %}
+                <button class="btn btn-success" type="submit">Save</button>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

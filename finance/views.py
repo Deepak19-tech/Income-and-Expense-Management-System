@@ -1,0 +1,738 @@
+from decimal import Decimal
+import json
+import math
+from django.utils.safestring import mark_safe
+
+from django.contrib import messages
+from django.contrib.auth import authenticate, login, logout
+from django.contrib.auth.decorators import login_required
+from django.db.models import Sum
+from django.shortcuts import get_object_or_404, redirect, render
+from django.utils import timezone
+
+from .forms import AccountForm, BillReminderForm, BudgetForm, CategoryForm, ExpenseForm, GoalForm, IncomeForm, ProfileForm, RecurringTransactionForm, RegistrationForm, ShareForm, TagForm, TransferForm
+from .models import Account, AccountTransfer, BillReminder, Budget, Category, Expense, ImportBatch, Income, RecurringTransaction, SavingsGoal, SharedAccess, TransactionTag
+from io import BytesIO
+from django.http import HttpResponse
+import datetime
+import csv
+
+
+def _predict_next_month_expense(user, months_to_use=6):
+    expense_rows = list(
+        Expense.objects.filter(user=user)
+        .values('date')
+        .annotate(total=Sum('amount'))
+        .order_by('date')
+    )
+    income_rows = list(
+        Income.objects.filter(user=user)
+        .values('date')
+        .annotate(total=Sum('amount'))
+        .order_by('date')
+    )
+
+    if not expense_rows and not income_rows:
+        return {
+            'predicted_amount': Decimal('0'),
+            'model_type': 'average',
+            'message': 'Add a few months of expense data to start forecasting.',
+        }
+
+    expense_by_month = {
+        row['date'].strftime('%Y-%m'): Decimal(str(row['total']))
+        for row in expense_rows
+    }
+    income_by_month = {
+        row['date'].strftime('%Y-%m'): Decimal(str(row['total']))
+        for row in income_rows
+    }
+
+    dates = [row['date'] for row in expense_rows] + [row['date'] for row in income_rows]
+    if not dates:
+        return {
+            'predicted_amount': Decimal('0'),
+            'model_type': 'average',
+            'message': 'Add a few months of transaction data to start forecasting.',
+        }
+
+    start_date = min(dates).replace(day=1)
+    end_date = max(dates).replace(day=1)
+    month_series = []
+    current = start_date
+    while current <= end_date:
+        month_key = current.strftime('%Y-%m')
+        month_series.append({
+            'month': month_key,
+            'expense': expense_by_month.get(month_key, Decimal('0')),
+            'income': income_by_month.get(month_key, Decimal('0')),
+        })
+        if current.month == 12:
+            current = current.replace(year=current.year + 1, month=1)
+        else:
+            current = current.replace(month=current.month + 1)
+
+    if len(month_series) > months_to_use:
+        month_series = month_series[-months_to_use:]
+
+    if len(month_series) < 2:
+        recent_expense = sum(item['expense'] for item in month_series) / len(month_series) if month_series else Decimal('0')
+        return {
+            'predicted_amount': recent_expense,
+            'model_type': 'average',
+            'message': 'Not enough history yet, so the forecast uses the recent average.',
+        }
+
+    training_rows = []
+    for index, month in enumerate(month_series):
+        prev_expense = month_series[index - 1]['expense'] if index > 0 else Decimal('0')
+        feature_vector = [
+            Decimal(index + 1),
+            month['income'],
+            prev_expense,
+        ]
+        training_rows.append((feature_vector, month['expense']))
+
+    feature_means = [sum(float(row[0][i]) for row in training_rows) / len(training_rows) for i in range(3)]
+    feature_stds = []
+    for i in range(3):
+        variance = sum((float(row[0][i]) - feature_means[i]) ** 2 for row in training_rows) / len(training_rows)
+        feature_stds.append(math.sqrt(variance) or 1.0)
+
+    normalized_rows = []
+    for features, target in training_rows:
+        normalized_features = []
+        for index, value in enumerate(features):
+            std = feature_stds[index]
+            normalized_features.append(float((float(value) - feature_means[index]) / std) if std != 0 else 0.0)
+        normalized_rows.append((normalized_features, float(target)))
+
+    weights = [0.0, 0.0, 0.0]
+    bias = 0.0
+    learning_rate = 0.01
+    for _ in range(3000):
+        predictions = []
+        errors = []
+        for features, target in normalized_rows:
+            prediction = bias + sum(weight * value for weight, value in zip(weights, features))
+            predictions.append(prediction)
+            errors.append(prediction - target)
+
+        if not errors:
+            break
+
+        gradient_weights = [0.0, 0.0, 0.0]
+        gradient_bias = 0.0
+        for features, error in zip((row[0] for row in normalized_rows), errors):
+            for idx, value in enumerate(features):
+                gradient_weights[idx] += error * value
+            gradient_bias += error
+
+        sample_count = max(len(normalized_rows), 1)
+        gradient_weights = [value / sample_count for value in gradient_weights]
+        gradient_bias /= sample_count
+        weights = [weight - learning_rate * gradient for weight, gradient in zip(weights, gradient_weights)]
+        bias -= learning_rate * gradient_bias
+
+    latest_month = month_series[-1]
+    latest_features = [
+        float(len(month_series)),
+        float(latest_month['income']),
+        float(latest_month['expense']),
+    ]
+    normalized_latest = []
+    for index, value in enumerate(latest_features):
+        std = feature_stds[index]
+        normalized_latest.append(float((value - feature_means[index]) / std) if std != 0 else 0.0)
+
+    predicted_value = bias + sum(weight * value for weight, value in zip(weights, normalized_latest))
+    predicted_amount = Decimal(str(max(predicted_value, 0)))
+
+    return {
+        'predicted_amount': predicted_amount,
+        'model_type': 'multivariate_linear_regression',
+        'message': 'Forecast based on month trend, income, and past spending.',
+    }
+
+
+@login_required
+def quick_transaction(request):
+    if request.method != 'POST':
+        return redirect('dashboard')
+
+    tx_type = request.POST.get('tx_type')
+    category_id = request.POST.get('category')
+    amount = request.POST.get('amount')
+    currency = request.POST.get('currency')
+    date = request.POST.get('date')
+    description = request.POST.get('description', '')
+    payment_method = request.POST.get('payment_method', '')
+
+    try:
+        category = Category.objects.get(pk=category_id, user=request.user)
+    except Category.DoesNotExist:
+        messages.error(request, 'Invalid category selected.')
+        return redirect('dashboard')
+
+    if tx_type == 'income':
+        income = Income(user=request.user, category=category, amount=amount, currency=currency or 'USD', date=date or timezone.now().date(), description=description)
+        income.save()
+        messages.success(request, 'Income added.')
+    elif tx_type == 'expense':
+        expense = Expense(user=request.user, category=category, amount=amount, currency=currency or 'USD', date=date or timezone.now().date(), description=description, payment_method=payment_method)
+        expense.save()
+        messages.success(request, 'Expense added.')
+    else:
+        messages.error(request, 'Invalid transaction type.')
+
+    return redirect('dashboard')
+
+
+def register_view(request):
+    if request.method == 'POST':
+        form = RegistrationForm(request.POST)
+        if form.is_valid():
+            form.save()
+            user = authenticate(request, username=form.cleaned_data['username'], password=form.cleaned_data['password1'])
+            if user is not None:
+                login(request, user)
+                messages.success(request, 'Welcome! Your account has been created.')
+                return redirect('dashboard')
+    else:
+        form = RegistrationForm()
+    return render(request, 'finance/register.html', {'form': form})
+
+
+def login_view(request):
+    if request.method == 'POST':
+        username = request.POST.get('username')
+        password = request.POST.get('password')
+        user = authenticate(request, username=username, password=password)
+        if user is not None:
+            login(request, user)
+            return redirect('dashboard')
+        messages.error(request, 'Invalid username or password.')
+    return render(request, 'finance/login.html')
+
+
+@login_required
+def logout_view(request):
+    logout(request)
+    return redirect('login')
+
+
+def _get_display_currency_symbol(recent_transactions, income_qs, expense_qs):
+    for transaction in recent_transactions:
+        if hasattr(transaction, 'currency_symbol'):
+            return transaction.currency_symbol
+    first_income = income_qs.first()
+    if first_income is not None:
+        return first_income.currency_symbol
+    first_expense = expense_qs.first()
+    if first_expense is not None:
+        return first_expense.currency_symbol
+    return '$'
+
+
+@login_required
+def dashboard(request):
+    today = timezone.now().date()
+    month_start = today.replace(day=1)
+    income_qs = Income.objects.filter(user=request.user)
+    expense_qs = Expense.objects.filter(user=request.user)
+
+    current_month_income = income_qs.filter(date__gte=month_start).aggregate(total=Sum('amount'))['total'] or Decimal('0')
+    current_month_expense = expense_qs.filter(date__gte=month_start).aggregate(total=Sum('amount'))['total'] or Decimal('0')
+    all_time_income = income_qs.aggregate(total=Sum('amount'))['total'] or Decimal('0')
+    all_time_expense = expense_qs.aggregate(total=Sum('amount'))['total'] or Decimal('0')
+    savings_this_month = current_month_income - current_month_expense
+
+    recent_transactions = list(income_qs.order_by('-date')[:5]) + list(expense_qs.order_by('-date')[:5])
+    recent_transactions.sort(key=lambda item: item.date, reverse=True)
+    for transaction in recent_transactions:
+        transaction.model_name = 'Income' if isinstance(transaction, Income) else 'Expense'
+
+    current_currency_symbol = _get_display_currency_symbol(recent_transactions, income_qs, expense_qs)
+    expense_breakdown = expense_qs.values('category__name').annotate(total=Sum('amount')).order_by('-total')[:5]
+    budgets = Budget.objects.filter(user=request.user).select_related('category')
+    current_month_expenses_by_category = {
+        item['category_id']: item['total']
+        for item in expense_qs.filter(date__gte=month_start).values('category_id').annotate(total=Sum('amount'))
+    }
+    budget_summary = []
+    budget_alerts = 0
+    for budget in budgets:
+        spent = current_month_expenses_by_category.get(budget.category_id, Decimal('0'))
+        limit = budget.amount_limit or Decimal('0')
+        if limit <= 0:
+            percent = 0
+        else:
+            percent = int(min(100, max(0, float((spent / limit) * Decimal('100')))))
+        status = 'safe'
+        if spent >= limit and limit > 0:
+            status = 'over'
+            budget_alerts += 1
+        elif limit > 0 and spent >= (limit * Decimal('0.9')):
+            status = 'warning'
+            budget_alerts += 1
+        budget_summary.append({
+            'category_name': budget.category.name,
+            'limit': limit,
+            'spent': spent,
+            'remaining': limit - spent,
+            'percent': percent,
+            'status': status,
+        })
+    # Prepare chart data: last 6 months income/expense series and category breakdown
+    def _get_last_n_months(n=6):
+        labels = []
+        today = timezone.now().date()
+        year = today.year
+        month = today.month
+        for i in range(n-1, -1, -1):
+            m = month - i
+            y = year
+            while m <= 0:
+                m += 12
+                y -= 1
+            labels.append(f"{y}-{m:02d}")
+        return labels
+
+    months = _get_last_n_months(6)
+    income_series = []
+    expense_series = []
+    for m in months:
+        y, mo = map(int, m.split('-'))
+        inc_total = income_qs.filter(date__year=y, date__month=mo).aggregate(total=Sum('amount'))['total'] or Decimal('0')
+        exp_total = expense_qs.filter(date__year=y, date__month=mo).aggregate(total=Sum('amount'))['total'] or Decimal('0')
+        income_series.append(float(inc_total))
+        expense_series.append(float(exp_total))
+
+    category_labels = [item['category__name'] for item in expense_breakdown]
+    category_values = [float(item['total']) for item in expense_breakdown]
+
+    # JSON for embedding in JS
+    months_json = mark_safe(json.dumps(months))
+    income_json = mark_safe(json.dumps(income_series))
+    expense_json = mark_safe(json.dumps(expense_series))
+    category_labels_json = mark_safe(json.dumps(category_labels))
+    category_values_json = mark_safe(json.dumps(category_values))
+    return render(
+        request,
+        'finance/dashboard.html',
+        {
+            'current_month_income': current_month_income,
+            'current_month_expense': current_month_expense,
+            'all_time_income': all_time_income,
+            'all_time_expense': all_time_expense,
+            'recent_transactions': recent_transactions[:8],
+            'expense_breakdown': expense_breakdown,
+            'budgets': budgets,
+            'net_balance': current_month_income - current_month_expense,
+            'savings_this_month': savings_this_month,
+            'budget_alerts': budget_alerts,
+            'budget_summary': budget_summary,
+            'categories': Category.objects.filter(user=request.user),
+            'current_currency_symbol': current_currency_symbol,
+            'chart_months': months_json,
+            'chart_income': income_json,
+            'chart_expense': expense_json,
+            'chart_cat_labels': category_labels_json,
+            'chart_cat_values': category_values_json,
+        },
+    )
+
+
+@login_required
+def category_list(request):
+    categories = Category.objects.filter(user=request.user)
+    if request.method == 'POST':
+        form = CategoryForm(request.POST)
+        if form.is_valid():
+            category = form.save(commit=False)
+            category.user = request.user
+            category.save()
+            messages.success(request, 'Category created successfully.')
+            return redirect('categories')
+    else:
+        form = CategoryForm()
+    return render(request, 'finance/categories.html', {'categories': categories, 'form': form})
+
+
+@login_required
+def category_delete(request, pk):
+    category = get_object_or_404(Category, pk=pk, user=request.user)
+    if Income.objects.filter(category=category).exists() or Expense.objects.filter(category=category).exists():
+        messages.error(request, 'Cannot delete a category that has transactions.')
+    else:
+        category.delete()
+        messages.success(request, 'Category deleted.')
+    return redirect('categories')
+
+
+@login_required
+def income_list(request):
+    incomes = Income.objects.filter(user=request.user).select_related('category')
+    if request.GET.get('start_date'):
+        incomes = incomes.filter(date__gte=request.GET['start_date'])
+    if request.GET.get('end_date'):
+        incomes = incomes.filter(date__lte=request.GET['end_date'])
+    if request.GET.get('category'):
+        incomes = incomes.filter(category_id=request.GET['category'])
+    return render(request, 'finance/income_list.html', {'incomes': incomes, 'categories': Category.objects.filter(user=request.user, type='income')})
+
+
+@login_required
+def income_create(request):
+    if request.method == 'POST':
+        form = IncomeForm(request.POST, request.FILES, user=request.user)
+        if form.is_valid():
+            income = form.save(commit=False)
+            income.user = request.user
+            income.save()
+            messages.success(request, 'Income added successfully.')
+            return redirect('income_list')
+    else:
+        form = IncomeForm(user=request.user)
+    return render(request, 'finance/income_form.html', {'form': form, 'mode': 'Create'})
+
+
+@login_required
+def income_update(request, pk):
+    income = get_object_or_404(Income, pk=pk, user=request.user)
+    if request.method == 'POST':
+        form = IncomeForm(request.POST, request.FILES, instance=income, user=request.user)
+        if form.is_valid():
+            form.save()
+            messages.success(request, 'Income updated successfully.')
+            return redirect('income_list')
+    else:
+        form = IncomeForm(instance=income, user=request.user)
+    return render(request, 'finance/income_form.html', {'form': form, 'mode': 'Edit'})
+
+
+@login_required
+def income_delete(request, pk):
+    income = get_object_or_404(Income, pk=pk, user=request.user)
+    income.delete()
+    messages.success(request, 'Income deleted.')
+    return redirect('income_list')
+
+
+@login_required
+def expense_list(request):
+    expenses = Expense.objects.filter(user=request.user).select_related('category')
+    if request.GET.get('start_date'):
+        expenses = expenses.filter(date__gte=request.GET['start_date'])
+    if request.GET.get('end_date'):
+        expenses = expenses.filter(date__lte=request.GET['end_date'])
+    if request.GET.get('category'):
+        expenses = expenses.filter(category_id=request.GET['category'])
+    if request.GET.get('payment_method'):
+        expenses = expenses.filter(payment_method=request.GET['payment_method'])
+    if request.GET.get('q'):
+        expenses = expenses.filter(description__icontains=request.GET['q'])
+    return render(request, 'finance/expense_list.html', {'expenses': expenses, 'categories': Category.objects.filter(user=request.user, type='expense')})
+
+
+@login_required
+def expense_create(request):
+    if request.method == 'POST':
+        form = ExpenseForm(request.POST, request.FILES, user=request.user)
+        if form.is_valid():
+            expense = form.save(commit=False)
+            expense.user = request.user
+            expense.save()
+            messages.success(request, 'Expense added successfully.')
+            return redirect('expense_list')
+    else:
+        form = ExpenseForm(user=request.user)
+    return render(request, 'finance/expense_form.html', {'form': form, 'mode': 'Create'})
+
+
+@login_required
+def expense_update(request, pk):
+    expense = get_object_or_404(Expense, pk=pk, user=request.user)
+    if request.method == 'POST':
+        form = ExpenseForm(request.POST, request.FILES, instance=expense, user=request.user)
+        if form.is_valid():
+            form.save()
+            messages.success(request, 'Expense updated successfully.')
+            return redirect('expense_list')
+    else:
+        form = ExpenseForm(instance=expense, user=request.user)
+    return render(request, 'finance/expense_form.html', {'form': form, 'mode': 'Edit'})
+
+
+@login_required
+def expense_delete(request, pk):
+    expense = get_object_or_404(Expense, pk=pk, user=request.user)
+    expense.delete()
+    messages.success(request, 'Expense deleted.')
+    return redirect('expense_list')
+
+
+@login_required
+def reports(request):
+    incomes = Income.objects.filter(user=request.user)
+    expenses = Expense.objects.filter(user=request.user)
+    if request.GET.get('start_date'):
+        incomes = incomes.filter(date__gte=request.GET['start_date'])
+        expenses = expenses.filter(date__gte=request.GET['start_date'])
+    if request.GET.get('end_date'):
+        incomes = incomes.filter(date__lte=request.GET['end_date'])
+        expenses = expenses.filter(date__lte=request.GET['end_date'])
+    if request.GET.get('category'):
+        incomes = incomes.filter(category_id=request.GET['category'])
+        expenses = expenses.filter(category_id=request.GET['category'])
+    if request.GET.get('type'):
+        if request.GET['type'] == 'income':
+            expenses = Expense.objects.none()
+        elif request.GET['type'] == 'expense':
+            incomes = Income.objects.none()
+    income_total = incomes.aggregate(total=Sum('amount'))['total'] or Decimal('0')
+    expense_total = expenses.aggregate(total=Sum('amount'))['total'] or Decimal('0')
+    current_currency_symbol = _get_display_currency_symbol([], incomes, expenses)
+    expense_prediction = _predict_next_month_expense(request.user)
+    return render(request, 'finance/reports.html', {
+        'income_total': income_total,
+        'expense_total': expense_total,
+        'categories': Category.objects.filter(user=request.user),
+        'incomes': incomes,
+        'expenses': expenses,
+        'current_currency_symbol': current_currency_symbol,
+        'expense_prediction': expense_prediction,
+    })
+
+@login_required
+def export_transactions(request):
+    """Export transactions as Excel or PDF.
+
+    GET params:
+    - period: '1','3','6','12' months or 'all'
+    - category: category id or empty
+    - format: 'excel' or 'pdf'
+    If start_date/end_date provided, they override period (YYYY-MM-DD).
+    """
+    period = request.GET.get('period', '1')
+    fmt = request.GET.get('format', 'excel')
+    cat = request.GET.get('category')
+    start_date = request.GET.get('start_date')
+    end_date = request.GET.get('end_date')
+
+    today = datetime.date.today()
+    if start_date and end_date:
+        try:
+            start = datetime.datetime.strptime(start_date, '%Y-%m-%d').date()
+            end = datetime.datetime.strptime(end_date, '%Y-%m-%d').date()
+        except Exception:
+            return HttpResponse('Invalid date format', status=400)
+    else:
+        if period == 'all':
+            start = None
+            end = today
+        else:
+            try:
+                months = int(period)
+            except Exception:
+                months = 1
+            # compute month-accurate start
+            y = today.year
+            m = today.month - months + 1
+            while m <= 0:
+                m += 12
+                y -= 1
+            start = datetime.date(y, m, 1)
+            end = today
+
+    incomes = Income.objects.filter(user=request.user)
+    expenses = Expense.objects.filter(user=request.user)
+    if start:
+        incomes = incomes.filter(date__gte=start)
+        expenses = expenses.filter(date__gte=start)
+    if end:
+        incomes = incomes.filter(date__lte=end)
+        expenses = expenses.filter(date__lte=end)
+    if cat:
+        incomes = incomes.filter(category_id=cat)
+        expenses = expenses.filter(category_id=cat)
+
+    # Build rows
+    rows = []
+    for inc in incomes.order_by('date'):
+        rows.append(['Income', inc.date.isoformat(), inc.category.name, str(inc.amount), inc.currency, inc.description or '', ''])
+    for exp in expenses.order_by('date'):
+        rows.append(['Expense', exp.date.isoformat(), exp.category.name, str(exp.amount), exp.currency, exp.description or '', exp.payment_method or ''])
+
+    # If no data
+    if not rows:
+        return HttpResponse('No transactions for the selected filters.', status=404)
+
+    if fmt == 'excel':
+        # generate Excel using openpyxl if available
+        try:
+            from openpyxl import Workbook
+        except Exception:
+            return HttpResponse('openpyxl is required for Excel export. Install with pip install openpyxl', status=500)
+        wb = Workbook()
+        ws = wb.active
+        ws.title = 'Transactions'
+        headers = ['Type', 'Date', 'Category', 'Amount', 'Currency', 'Description', 'Payment Method']
+        ws.append(headers)
+        for r in rows:
+            ws.append(r)
+        bio = BytesIO()
+        wb.save(bio)
+        bio.seek(0)
+        filename = f'transactions_{start.isoformat() if start else "all"}_{end.isoformat()}.xlsx'
+        resp = HttpResponse(bio.read(), content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        resp['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return resp
+    else:
+        # PDF via reportlab
+        try:
+            from reportlab.lib.pagesizes import letter
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+            from reportlab.lib import colors
+            from reportlab.lib.styles import getSampleStyleSheet
+        except Exception:
+            return HttpResponse('reportlab is required for PDF export. Install with pip install reportlab', status=500)
+        bio = BytesIO()
+        doc = SimpleDocTemplate(bio, pagesize=letter)
+        styles = getSampleStyleSheet()
+        elems = []
+        title = Paragraph('Transaction Report', styles['Heading2'])
+        elems.append(title)
+        elems.append(Paragraph(f'Period: {start.isoformat() if start else "All"} to {end.isoformat()}', styles['Normal']))
+        elems.append(Spacer(1, 12))
+        data = [['Type', 'Date', 'Category', 'Amount', 'Currency', 'Description', 'Payment Method']] + rows
+        table = Table(data, repeatRows=1)
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#d3d3d3')),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+            ('VALIGN', (0,0), (-1,-1), 'TOP'),
+        ]))
+        elems.append(table)
+        doc.build(elems)
+        bio.seek(0)
+        filename = f'transactions_{start.isoformat() if start else "all"}_{end.isoformat()}.pdf'
+        resp = HttpResponse(bio.read(), content_type='application/pdf')
+        resp['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return resp
+
+
+@login_required
+def profile_view(request):
+    if request.method == 'POST':
+        form = ProfileForm(request.POST, instance=request.user)
+        if form.is_valid():
+            user = form.save(commit=False)
+            password = form.cleaned_data.get('password')
+            if password:
+                user.set_password(password)
+            user.save()
+            messages.success(request, 'Profile updated.')
+            return redirect('profile')
+    else:
+        form = ProfileForm(instance=request.user)
+    return render(request, 'finance/profile.html', {'form': form, 'transaction_count': Income.objects.filter(user=request.user).count() + Expense.objects.filter(user=request.user).count()})
+
+
+@login_required
+def budgets(request):
+    budgets = Budget.objects.filter(user=request.user).select_related('category')
+    if request.method == 'POST':
+        form = BudgetForm(request.POST, user=request.user)
+        if form.is_valid():
+            budget = form.save(commit=False)
+            budget.user = request.user
+            budget.save()
+            messages.success(request, 'Budget saved.')
+            return redirect('budgets')
+    else:
+        form = BudgetForm(user=request.user)
+
+    current_currency_symbol = _get_display_currency_symbol([], Income.objects.filter(user=request.user), Expense.objects.filter(user=request.user))
+    return render(request, 'finance/budgets.html', {'budgets': budgets, 'form': form, 'current_currency_symbol': current_currency_symbol})
+
+
+@login_required
+def financial_tools(request):
+    """A practical command centre for accounts, goals, automations, reminders and sharing."""
+    forms = {
+        'account_form': AccountForm(), 'transfer_form': TransferForm(user=request.user),
+        'goal_form': GoalForm(), 'recurring_form': RecurringTransactionForm(user=request.user),
+        'reminder_form': BillReminderForm(), 'tag_form': TagForm(), 'share_form': ShareForm(),
+    }
+    if request.method == 'POST':
+        action = request.POST.get('action')
+        form_key = {'account':'account_form', 'transfer':'transfer_form', 'goal':'goal_form', 'recurring':'recurring_form', 'reminder':'reminder_form', 'tag':'tag_form', 'share':'share_form'}.get(action)
+        if form_key:
+            form_class = type(forms[form_key])
+            kwargs = {'user': request.user} if action in ('transfer', 'recurring') else {}
+            form = form_class(request.POST, **kwargs)
+            forms[form_key] = form
+            if form.is_valid():
+                if action == 'share':
+                    member = form.cleaned_data['member_username']
+                    if member == request.user:
+                        form.add_error('member_username', 'You cannot share finance data with yourself.')
+                    else:
+                        SharedAccess.objects.update_or_create(owner=request.user, member=member, defaults={'can_edit': form.cleaned_data['can_edit']})
+                        messages.success(request, 'Collaborator access saved.')
+                        return redirect('financial_tools')
+                else:
+                    item = form.save(commit=False); item.user = request.user; item.save()
+                    messages.success(request, f'{action.title()} saved.')
+                    return redirect('financial_tools')
+        elif action == 'import':
+            source_file = request.FILES.get('file')
+            if not source_file or not source_file.name.lower().endswith('.csv'):
+                messages.error(request, 'Please upload a CSV file.')
+            else:
+                decoded = source_file.read().decode('utf-8-sig').splitlines()
+                rows, created = csv.DictReader(decoded), 0
+                for row in rows:
+                    try:
+                        tx_type = (row.get('Type') or row.get('type') or 'expense').lower()
+                        date = datetime.date.fromisoformat(row.get('Date') or row.get('date'))
+                        amount = Decimal(row.get('Amount') or row.get('amount'))
+                        category_name = row.get('Category') or row.get('category') or 'Imported'
+                        category, _ = Category.objects.get_or_create(user=request.user, name=category_name, type='income' if tx_type == 'income' else 'expense')
+                        defaults = {'user':request.user, 'category':category, 'amount':amount, 'currency':row.get('Currency') or row.get('currency') or 'USD', 'date':date, 'description':row.get('Description') or row.get('description') or 'Imported transaction'}
+                        if tx_type == 'income': Income.objects.create(**defaults)
+                        else: Expense.objects.create(**defaults, payment_method=row.get('Payment Method') or row.get('payment_method') or '')
+                        created += 1
+                    except (ValueError, TypeError, KeyError):
+                        continue
+                source_file.seek(0); ImportBatch.objects.create(user=request.user, source_file=source_file, imported_count=created)
+                messages.success(request, f'Imported {created} transaction(s).')
+                return redirect('financial_tools')
+    today = timezone.localdate()
+    due_reminders = BillReminder.objects.filter(user=request.user, is_paid=False, due_date__lte=today + datetime.timedelta(days=7)).order_by('due_date')
+    goal_data = []
+    for goal in SavingsGoal.objects.filter(user=request.user):
+        goal_data.append((goal, min(100, int(goal.current_amount * 100 / goal.target_amount)) if goal.target_amount else 0))
+    return render(request, 'finance/financial_tools.html', {**forms, 'accounts':Account.objects.filter(user=request.user), 'transfers':AccountTransfer.objects.filter(user=request.user)[:5], 'goals':goal_data, 'recurring':RecurringTransaction.objects.filter(user=request.user), 'reminders':due_reminders, 'tags':TransactionTag.objects.filter(user=request.user), 'shares':SharedAccess.objects.filter(owner=request.user).select_related('member'), 'imports':ImportBatch.objects.filter(user=request.user)[:5]})
+
+
+@login_required
+def run_recurring(request):
+    today, created = timezone.localdate(), 0
+    for recurring in RecurringTransaction.objects.filter(user=request.user, is_active=True, next_due_date__lte=today):
+        model = Income if recurring.type == 'income' else Expense
+        values = {'user':request.user, 'category':recurring.category, 'account':recurring.account, 'amount':recurring.amount, 'currency':recurring.currency, 'date':recurring.next_due_date, 'description':recurring.description}
+        if model == Expense: values['payment_method'] = 'Bank Transfer'
+        model.objects.create(**values); created += 1
+        days = {'weekly':7, 'monthly':30, 'yearly':365}[recurring.frequency]
+        recurring.next_due_date += datetime.timedelta(days=days); recurring.save(update_fields=['next_due_date'])
+    messages.success(request, f'Posted {created} recurring transaction(s).')
+    return redirect('financial_tools')
+
+
+@login_required
+def backup_data(request):
+    data = {'exported_at': timezone.now().isoformat(), 'accounts': list(Account.objects.filter(user=request.user).values('name','type','opening_balance','currency')), 'income': list(Income.objects.filter(user=request.user).values('amount','currency','date','description')), 'expenses': list(Expense.objects.filter(user=request.user).values('amount','currency','date','description','payment_method')), 'goals': list(SavingsGoal.objects.filter(user=request.user).values('name','target_amount','current_amount','target_date'))}
+    response = HttpResponse(json.dumps(data, default=str, indent=2), content_type='application/json')
+    response['Content-Disposition'] = 'attachment; filename="hisabkitab-backup.json"'
+    return response

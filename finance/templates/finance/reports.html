@@ -1,0 +1,80 @@
+{% extends 'finance/base.html' %}
+{% block title %}Reports{% endblock %}
+{% block content %}
+<h2 class="mb-4">Reports</h2>
+<form method="get" class="row g-2 mb-3">
+    <div class="col-md-3">
+        <label class="visually-hidden" for="reports_start_date">Start Date</label>
+        <input id="reports_start_date" type="date" class="form-control" name="start_date" value="{{ request.GET.start_date }}" placeholder="Start date">
+    </div>
+    <div class="col-md-3">
+        <label class="visually-hidden" for="reports_end_date">End Date</label>
+        <input id="reports_end_date" type="date" class="form-control" name="end_date" value="{{ request.GET.end_date }}" placeholder="End date">
+    </div>
+    <div class="col-md-3">
+        <label class="visually-hidden" for="reports_category">Category</label>
+        <select id="reports_category" class="form-select" name="category"><option value="">All categories</option>{% for category in categories %}<option value="{{ category.id }}" {% if request.GET.category == category.id|stringformat:'s' %}selected{% endif %}>{{ category.name }}</option>{% endfor %}</select>
+    </div>
+    <div class="col-md-3">
+        <label class="visually-hidden" for="reports_type">Type</label>
+        <select id="reports_type" class="form-select" name="type"><option value="">All types</option><option value="income">Income</option><option value="expense">Expense</option></select>
+    </div>
+    <div class="col-md-12"><button class="btn btn-primary" type="submit">Apply Filters</button></div>
+</form>
+<form method="get" action="{% url 'export_transactions' %}" class="row g-2 mb-3">
+    <div class="col-md-3">
+        <label class="visually-hidden" for="exp_period">Period</label>
+        <select id="exp_period" name="period" class="form-select">
+            <option value="1">1 month</option>
+            <option value="3">3 months</option>
+            <option value="6">6 months</option>
+            <option value="12">1 year</option>
+            <option value="all">All</option>
+        </select>
+    </div>
+    <div class="col-md-3">
+        <label class="visually-hidden" for="exp_category">Category</label>
+        <select id="exp_category" name="category" class="form-select">
+            <option value="">All categories</option>
+            {% for category in categories %}<option value="{{ category.id }}">{{ category.name }}</option>{% endfor %}
+        </select>
+    </div>
+    <div class="col-md-3">
+        <label class="visually-hidden" for="exp_format">Format</label>
+        <select id="exp_format" name="format" class="form-select">
+            <option value="excel">Excel</option>
+            <option value="pdf">PDF</option>
+        </select>
+    </div>
+    <div class="col-md-3"><button class="btn btn-outline-primary w-100" type="submit">Download Report</button></div>
+</form>
+<div class="row g-4">
+    <div class="col-md-6"><div class="card shadow-sm p-4"><h5>Total Income</h5><h3 class="text-success">{{ current_currency_symbol }}{{ income_total }}</h3></div></div>
+    <div class="col-md-6"><div class="card shadow-sm p-4"><h5>Total Expense</h5><h3 class="text-danger">{{ current_currency_symbol }}{{ expense_total }}</h3></div></div>
+</div>
+<div class="row g-4 mt-1">
+    <div class="col-12">
+        <div class="card shadow-sm p-4 border-primary">
+            <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+                <div>
+                    <h5 class="mb-1">Next-month expense prediction</h5>
+                    <p class="text-muted mb-0">{{ expense_prediction.message }}</p>
+                </div>
+                <div class="text-end">
+                    <h3 class="text-primary mb-0">{{ current_currency_symbol }}{{ expense_prediction.predicted_amount }}</h3>
+                    <small class="text-muted">{{ expense_prediction.model_type }}</small>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<div class="card shadow-sm p-4 mt-4">
+    <table class="table table-striped">
+        <thead><tr><th>Type</th><th>Date</th><th>Category</th><th>Amount</th><th>Description</th></tr></thead>
+        <tbody>
+            {% for income in incomes %}<tr><td>Income</td><td>{{ income.date }}</td><td>{{ income.category.name }}</td><td>{{ income.currency_symbol }}{{ income.amount }}</td><td>{{ income.description }}</td></tr>{% endfor %}
+            {% for expense in expenses %}<tr><td>Expense</td><td>{{ expense.date }}</td><td>{{ expense.category.name }}</td><td>{{ expense.currency_symbol }}{{ expense.amount }}</td><td>{{ expense.description }}</td></tr>{% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 646 566" role="img" aria-labelledby="title">
+  <title id="title">HisabKitab</title>
+  <rect width="646" height="566" fill="#fff"/>
+  <path fill="#40adee" d="M238 126h98c-49 28-89 63-110 104z"/>
+  <path fill="#0d4eac" d="M226 305c29-75 96-151 201-192l-39 192h-35l18-107h-21l-16 107h-21l13-87h-21l-13 87h-21l10-65h-21l-10 65z"/>
+  <path fill="#fff" d="M180 304c1-49 65-131 152-172 34-16 67-24 95-19-27 6-58 19-89 38-83 50-144 123-137 163 4 21 29 24 61 16-40 19-76 18-81-26z"/>
+  <path fill="#3daff2" d="M180 304c-7-40 39-109 112-153 37-23 76-39 110-48-42 8-91 27-134 53-75 46-119 111-108 145 4 11 14 15 27 12-5 1-9 1-13 0-9-2-15-7-17-15-8-33 36-96 104-139 37-24 78-42 117-56-47 12-98 33-144 62-71 46-116 103-116 137 0 12 5 20 14 24-24 2-41-5-42-22z"/>
+  <path fill="#0d4eac" d="M199 292c-5 33 21 48 51 39 20-6 44-18 66-34-32 23-61 36-82 35-19-1-29-15-24-35 2-8 6-17 12-27-12 13-20 26-23 39z"/>
+  <text x="323" y="420" text-anchor="middle" fill="#000" font-family="Arial, Helvetica, sans-serif" font-size="64" font-weight="900" letter-spacing="2">HISABKITAB</text>
+</svg>

@@ -1,0 +1,175 @@
+{% extends 'finance/base.html' %}
+{% block title %}Dashboard{% endblock %}
+{% block body_class %}dashboard-page{% endblock %}
+{% block extra_head %}<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>{% endblock %}
+{% block content %}
+<div class="page-header d-flex justify-content-between align-items-start gap-3">
+    <div><span class="eyebrow"><i class="bi bi-stars"></i> Financial command center</span><h1 class="page-title">Welcome back, {{ user.full_name|default:user.username }}</h1><p class="page-subtitle">Your money, clearly organized for {% now "F Y" %}.</p></div>
+    <div class="d-flex align-items-center gap-2"><span class="date-chip d-none d-md-inline-flex"><i class="bi bi-calendar3"></i> {% now "M j, Y" %}</span><button class="btn btn-primary text-nowrap" data-bs-toggle="modal" data-bs-target="#quickTxModal"><i class="bi bi-plus-lg me-1"></i>Add transaction</button></div>
+</div>
+<div class="row g-4">
+    <div class="col-md-3">
+        <div class="card stat-card">
+            <div class="stat-icon"><i class="bi bi-wallet2"></i></div><div class="stat-label">Total balance</div><p class="stat-value">{{ current_currency_symbol }}{{ net_balance }}</p>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card stat-income">
+            <div class="stat-icon"><i class="bi bi-arrow-down-left"></i></div><div class="stat-label">Monthly income</div><p class="stat-value text-success">{{ current_currency_symbol }}{{ current_month_income }}</p>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card stat-expense">
+            <div class="stat-icon"><i class="bi bi-arrow-up-right"></i></div><div class="stat-label">Monthly expenses</div><p class="stat-value text-danger">{{ current_currency_symbol }}{{ current_month_expense }}</p>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card stat-savings">
+            <div class="stat-icon"><i class="bi bi-piggy-bank"></i></div><div class="stat-label">Monthly savings</div><p class="stat-value {% if savings_this_month >= 0 %}text-success{% else %}text-danger{% endif %}">{{ current_currency_symbol }}{{ savings_this_month }}</p>
+        </div>
+    </div>
+</div>
+<div class="row g-4 mt-2">
+    <div class="col-lg-8">
+        <div class="card p-4"><div class="section-head"><div><h5 class="section-title">Recent transactions</h5><span class="section-kicker">Your latest activity</span></div><a href="{% url 'reports' %}" class="btn btn-sm btn-light">View report</a></div><div class="table-responsive">
+            <table class="table table-hover">
+                <thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Category</th></tr></thead>
+                <tbody>
+                    {% for transaction in recent_transactions %}
+                    <tr>
+                        <td>{{ transaction.date }}</td>
+                        <td>{% if transaction.model_name %}{{ transaction.model_name }}{% else %}Transaction{% endif %}</td>
+                        <td>{% if transaction.model_name == 'Income' %}<span class="text-success">{{ transaction.currency_symbol }}{{ transaction.amount }}</span>{% else %}<span class="text-danger">{{ transaction.currency_symbol }}{{ transaction.amount }}</span>{% endif %}</td>
+                        <td>{{ transaction.category.name }}</td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="4">No transactions yet — add your first one.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table></div>
+        </div>
+    </div>
+    <div class="col-lg-4">
+        <div class="card p-4"><div class="section-head"><div><h5 class="section-title">Expense breakdown</h5><span class="section-kicker">By category</span></div></div>
+            <ul class="list-group">{% for item in expense_breakdown %}<li class="list-group-item d-flex justify-content-between"><span>{{ item.category__name }}</span><span>{{ current_currency_symbol }}{{ item.total }}</span></li>{% empty %}<li class="list-group-item">No expense data yet.</li>{% endfor %}</ul>
+        </div>
+    </div>
+</div>
+
+<div class="row g-4 mt-3">
+    <div class="col-md-8">
+        <div class="card p-4"><div class="section-head"><div><h5 class="section-title">Cash flow trend</h5><span class="section-kicker">Last 6 months</span></div></div><div class="chart-wrap">
+            <canvas id="trendChart"></canvas></div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card p-4"><div class="section-head"><div><h5 class="section-title">Spending mix</h5><span class="section-kicker">Expense categories</span></div></div><div class="chart-wrap">
+            <canvas id="pieChart"></canvas></div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-4 mt-3">
+    <div class="col-md-6">
+        <div class="card p-4"><div class="section-head"><div><h5 class="section-title">Budget health</h5><span class="section-kicker">This month</span></div></div>
+            <p class="text-muted mb-3">You have {{ budget_alerts }} budget alert(s) this month.</p>
+            {% for item in budget_summary %}
+            <div class="mb-3">
+                <div class="d-flex justify-content-between mb-1">
+                    <span>{{ item.category_name }}</span>
+                    <span>{% if item.status == 'over' %}<span class="text-danger">Over budget</span>{% elif item.status == 'warning' %}<span class="text-warning">Near limit</span>{% else %}<span class="text-success">On track</span>{% endif %}</span>
+                </div>
+                <div class="progress" style="height: 8px;">
+                    <div class="progress-bar {% if item.status == 'over' %}bg-danger{% elif item.status == 'warning' %}bg-warning{% else %}bg-success{% endif %}" role="progressbar" style="width: {{ item.percent }}%"></div>
+                </div>
+                <small class="text-muted">Spent {{ current_currency_symbol }}{{ item.spent }} of {{ current_currency_symbol }}{{ item.limit }} (remaining {{ current_currency_symbol }}{{ item.remaining }})</small>
+            </div>
+            {% empty %}
+            <p class="text-muted">No budgets created yet.</p>
+            {% endfor %}
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card p-4"><div class="section-head"><div><h5 class="section-title">Smart habits</h5><span class="section-kicker">Stay in control</span></div></div>
+            <ul class="mb-0">
+                <li>Track every income and expense regularly for accurate reports.</li>
+                <li>Set budgets for recurring categories like rent, food, and transport.</li>
+                <li>Review your dashboard weekly to improve savings and spending discipline.</li>
+            </ul>
+        </div>
+    </div>
+</div>
+
+<script type="application/json" id="chart-months">{{ chart_months|safe }}</script>
+<script type="application/json" id="chart-income">{{ chart_income|safe }}</script>
+<script type="application/json" id="chart-expense">{{ chart_expense|safe }}</script>
+<script type="application/json" id="chart-category-labels">{{ chart_cat_labels|safe }}</script>
+<script type="application/json" id="chart-category-values">{{ chart_cat_values|safe }}</script>
+
+<!-- Quick Transaction Modal -->
+<div class="modal fade" id="quickTxModal" tabindex="-1" aria-labelledby="quickTxModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <form method="post" action="{% url 'quick_transaction' %}">
+                {% csrf_token %}
+                <div class="modal-header">
+                    <h5 class="modal-title" id="quickTxModalLabel">Add Transaction</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="row g-3">
+                        <div class="col-md-4">
+                            <label class="form-label">Type</label>
+                            <select id="quick_tx_type" name="tx_type" class="form-select">
+                                <option value="income">Income</option>
+                                <option value="expense">Expense</option>
+                            </select>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Category</label>
+                            <select id="quick_category" name="category" class="form-select">
+                                {% for cat in categories %}
+                                    <option value="{{ cat.id }}" data-type="{{ cat.type }}">{{ cat.name }} ({{ cat.type }})</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Amount</label>
+                            <input name="amount" type="number" step="0.01" class="form-control" required>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Currency</label>
+                            <select name="currency" class="form-select">
+                                {% for code,label in Income.CURRENCY_CHOICES %}<option value="{{ code }}">{{ label }}</option>{% endfor %}
+                            </select>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Date</label>
+                            <input name="date" type="date" class="form-control">
+                        </div>
+                        <div class="col-md-4 expense-field d-none">
+                            <label class="form-label">Payment Method</label>
+                            <select name="payment_method" class="form-select">
+                                <option value="">(optional)</option>
+                                <option>Cash</option>
+                                <option>Card</option>
+                                <option>Bank Transfer</option>
+                                <option>Digital Wallet</option>
+                            </select>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label">Description</label>
+                            <textarea name="description" class="form-control" rows="2"></textarea>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
