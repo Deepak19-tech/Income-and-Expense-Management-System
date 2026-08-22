@@ -21,9 +21,13 @@ HisabKitab is a modern, lightweight income and expense record keeping web applic
 ## Setup
 1. Create and activate a virtual environment.
 2. Install dependencies: `pip install -r requirements.txt`
-3. Apply migrations: `python manage.py migrate`
-4. Create a superuser: `python manage.py createsuperuser`
-5. Run the development server: `python manage.py runserver`
+3. Copy `.env.example` to `.env` and set your local configuration.
+4. Apply migrations: `python manage.py migrate`
+5. Create a superuser: `python manage.py createsuperuser`
+6. Run the development server: `python manage.py runserver`
+
+### MySQL
+Set `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, and `DB_PORT` in `.env`, then run migrations. Leave `DB_NAME` blank to use SQLite instead.
 
 ## Project Structure
 - `expense_manager/` - Django project settings, URLs, and configuration
