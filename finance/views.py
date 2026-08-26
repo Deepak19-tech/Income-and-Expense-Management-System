@@ -289,6 +289,67 @@ def _budget_metrics(limit, spent):
     }
 
 
+def _dashboard_insights(user, today, income_qs, expense_qs, budget_summary, all_time_income, all_time_expense):
+    """Return explainable, rule-based recommendations from the user's history."""
+    current_month_start = today.replace(day=1)
+    history_end = current_month_start
+    history_start = (history_end - datetime.timedelta(days=1)).replace(day=1)
+    for _ in range(2):
+        history_start = (history_start - datetime.timedelta(days=1)).replace(day=1)
+
+    current_by_category = {
+        row['category_id']: row['total']
+        for row in expense_qs.filter(date__gte=current_month_start)
+        .values('category_id')
+        .annotate(total=Sum('amount'))
+    }
+    history_by_category = list(
+        expense_qs.filter(date__gte=history_start, date__lt=history_end)
+        .values('category_id', 'category__name')
+        .annotate(total=Sum('amount'))
+        .order_by('-total')
+    )
+
+    recommendations = []
+    unusual_spending = []
+    for row in history_by_category:
+        monthly_average = row['total'] / Decimal('3')
+        if monthly_average <= 0:
+            continue
+        recommendations.append({
+            'category_name': row['category__name'],
+            'average': monthly_average.quantize(Decimal('0.01')),
+            'suggested_limit': (monthly_average * Decimal('1.10')).quantize(Decimal('0.01')),
+        })
+        current_spending = current_by_category.get(row['category_id'], Decimal('0'))
+        if current_spending > monthly_average * Decimal('1.5'):
+            unusual_spending.append({
+                'category_name': row['category__name'],
+                'current_spending': current_spending,
+                'average': monthly_average.quantize(Decimal('0.01')),
+            })
+
+    current_income = income_qs.filter(date__gte=current_month_start).aggregate(total=Sum('amount'))['total'] or Decimal('0')
+    current_expense = expense_qs.filter(date__gte=current_month_start).aggregate(total=Sum('amount'))['total'] or Decimal('0')
+    savings_rate = ((current_income - current_expense) / current_income) if current_income else Decimal('0')
+    savings_points = 25 if savings_rate >= Decimal('0.20') else 15 if savings_rate >= 0 else 0
+    expense_ratio = (current_expense / current_income) if current_income else Decimal('1')
+    spending_points = 25 if expense_ratio <= Decimal('0.70') else 15 if expense_ratio <= Decimal('0.90') else 5 if expense_ratio <= 1 else 0
+    over_budget_count = sum(item['status'] == 'over' for item in budget_summary)
+    budget_points = 20 if not budget_summary else int(20 * (len(budget_summary) - over_budget_count) / len(budget_summary))
+    overspending_points = 15 if over_budget_count == 0 else 0
+    all_time_surplus = all_time_income - all_time_expense
+    buffer_points = 15 if current_expense and all_time_surplus >= current_expense * 3 else 8 if all_time_surplus > 0 else 0
+    health_score = savings_points + spending_points + budget_points + overspending_points + buffer_points
+    health_label = 'Excellent' if health_score >= 80 else 'Good' if health_score >= 60 else 'Needs attention'
+
+    return {
+        'budget_recommendations': recommendations[:5],
+        'unusual_spending': unusual_spending[:5],
+        'financial_health': {'score': health_score, 'label': health_label},
+    }
+
+
 @login_required
 def dashboard(request):
     today = timezone.now().date()
@@ -354,6 +415,10 @@ def dashboard(request):
     expense_json = mark_safe(json.dumps(expense_series))
     category_labels_json = mark_safe(json.dumps(category_labels))
     category_values_json = mark_safe(json.dumps(category_values))
+    insights = _dashboard_insights(
+        request.user, today, income_qs, expense_qs, budget_summary,
+        all_time_income, all_time_expense,
+    )
     return render(
         request,
         'finance/dashboard.html',
@@ -376,6 +441,7 @@ def dashboard(request):
             'chart_expense': expense_json,
             'chart_cat_labels': category_labels_json,
             'chart_cat_values': category_values_json,
+            **insights,
         },
     )
 

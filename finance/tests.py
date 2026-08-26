@@ -95,6 +95,23 @@ class FinanceCrudTests(TestCase):
         self.assertEqual(response.context['savings_this_month'], 850.00)
         self.assertEqual(response.context['budget_alerts'], 0)
         self.assertIn('budget_summary', response.context)
+        self.assertIn('financial_health', response.context)
+        self.assertIn('budget_recommendations', response.context)
+        self.assertIn('unusual_spending', response.context)
+
+    def test_dashboard_flags_unusual_spending_and_suggests_budget(self):
+        expense_category = Category.objects.create(user=self.user, name='Food', type='expense')
+        for date in ('2026-05-10', '2026-06-10', '2026-07-10'):
+            Expense.objects.create(user=self.user, category=expense_category, amount='100.00', currency='USD', date=date)
+        Expense.objects.create(user=self.user, category=expense_category, amount='200.00', currency='USD', date='2026-08-10')
+
+        response = self.client.get(reverse('dashboard'))
+
+        recommendation = response.context['budget_recommendations'][0]
+        alert = response.context['unusual_spending'][0]
+        self.assertEqual(recommendation['suggested_limit'], 110.00)
+        self.assertEqual(alert['category_name'], 'Food')
+        self.assertEqual(alert['current_spending'], 200.00)
 
     def test_budget_monitoring_uses_its_own_month_and_flags_overspending(self):
         expense_category = Category.objects.create(user=self.user, name='Food', type='expense')

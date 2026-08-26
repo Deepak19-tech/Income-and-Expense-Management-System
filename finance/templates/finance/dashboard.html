@@ -100,6 +100,25 @@
     </div>
 </div>
 
+<div class="row g-4 mt-3">
+    <div class="col-lg-4">
+        <div class="card p-4 h-100"><div class="section-head"><div><h5 class="section-title">Financial health</h5><span class="section-kicker">Based on this month's income, spending and budgets</span></div></div>
+            <div class="d-flex align-items-end gap-2 mb-2"><span class="display-5 fw-bold text-primary">{{ financial_health.score }}</span><span class="text-muted mb-2">/ 100</span></div>
+            <span class="badge text-bg-{% if financial_health.score >= 80 %}success{% elif financial_health.score >= 60 %}warning{% else %}danger{% endif %}">{{ financial_health.label }}</span>
+        </div>
+    </div>
+    <div class="col-lg-4">
+        <div class="card p-4 h-100"><div class="section-head"><div><h5 class="section-title">Unusual spending</h5><span class="section-kicker">More than 50% above your 3-month average</span></div></div>
+            {% for item in unusual_spending %}<div class="d-flex justify-content-between py-2 border-bottom"><span>{{ item.category_name }}</span><span class="text-danger">{{ current_currency_symbol }}{{ item.current_spending }} <small class="text-muted">avg {{ current_currency_symbol }}{{ item.average }}</small></span></div>{% empty %}<p class="empty-copy mb-0">No unusual spending detected.</p>{% endfor %}
+        </div>
+    </div>
+    <div class="col-lg-4">
+        <div class="card p-4 h-100"><div class="section-head"><div><h5 class="section-title">Suggested budgets</h5><span class="section-kicker">3-month average plus a 10% buffer</span></div></div>
+            {% for item in budget_recommendations %}<div class="d-flex justify-content-between py-2 border-bottom"><span>{{ item.category_name }}</span><span><strong>{{ current_currency_symbol }}{{ item.suggested_limit }}</strong> <small class="text-muted">avg {{ current_currency_symbol }}{{ item.average }}</small></span></div>{% empty %}<p class="empty-copy mb-0">Add three months of expenses to receive suggestions.</p>{% endfor %}
+        </div>
+    </div>
+</div>
+
 <script type="application/json" id="chart-months">{{ chart_months|safe }}</script>
 <script type="application/json" id="chart-income">{{ chart_income|safe }}</script>
 <script type="application/json" id="chart-expense">{{ chart_expense|safe }}</script>
