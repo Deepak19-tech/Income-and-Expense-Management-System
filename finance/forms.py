@@ -2,7 +2,7 @@ from django import forms
 from django.contrib.auth.forms import UserCreationForm
 from django.core.validators import RegexValidator
 
-from .models import Account, AccountTransfer, BillReminder, Budget, Category, Expense, Income, RecurringTransaction, SavingsGoal, SharedAccess, TransactionTag, User
+from .models import Account, AccountTransfer, BillReminder, Budget, Category, ExchangeRate, Expense, Income, RecurringTransaction, SavingsGoal, SharedAccess, TransactionTag, User
 from .validators import validate_com_email
 
 
@@ -186,7 +186,7 @@ class ProfileForm(StyledFormMixin, forms.ModelForm):
 
     class Meta:
         model = User
-        fields = ('full_name', 'email', 'phone_number', 'username')
+        fields = ('full_name', 'email', 'phone_number', 'username', 'reporting_currency')
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -248,6 +248,12 @@ class TransferForm(StyledFormMixin, forms.ModelForm):
             self.add_error('to_account', 'Choose a different destination account.')
         return cleaned
 
+    def clean_amount(self):
+        amount = self.cleaned_data['amount']
+        if amount <= 0:
+            raise forms.ValidationError('Transfer amount must be greater than zero.')
+        return amount
+
 
 class GoalForm(StyledFormMixin, forms.ModelForm):
     class Meta:
@@ -265,6 +271,16 @@ class GoalForm(StyledFormMixin, forms.ModelForm):
             raise forms.ValidationError('You already have a goal with this name.')
         return name
 
+    def clean(self):
+        cleaned = super().clean()
+        target = cleaned.get('target_amount')
+        current = cleaned.get('current_amount')
+        if target is not None and target <= 0:
+            self.add_error('target_amount', 'Target amount must be greater than zero.')
+        if target is not None and current is not None and current > target:
+            self.add_error('current_amount', 'Current savings cannot exceed the target amount.')
+        return cleaned
+
 
 class RecurringTransactionForm(StyledFormMixin, forms.ModelForm):
     class Meta:
@@ -276,6 +292,15 @@ class RecurringTransactionForm(StyledFormMixin, forms.ModelForm):
         if user:
             self.fields['category'].queryset = Category.objects.filter(user=user)
             self.fields['account'].queryset = Account.objects.filter(user=user, is_active=True)
+
+    def clean(self):
+        cleaned = super().clean()
+        category = cleaned.get('category')
+        if category and cleaned.get('type') and category.type != cleaned['type']:
+            self.add_error('category', 'Choose a category that matches the transaction type.')
+        if cleaned.get('amount') is not None and cleaned['amount'] <= 0:
+            self.add_error('amount', 'Amount must be greater than zero.')
+        return cleaned
 
 
 class BillReminderForm(StyledFormMixin, forms.ModelForm):
@@ -321,3 +346,22 @@ class ShareForm(StyledFormMixin, forms.ModelForm):
         username = self.cleaned_data['member_username']
         try: return User.objects.get(username=username)
         except User.DoesNotExist: raise forms.ValidationError('No user was found with that username.')
+
+
+class ExchangeRateForm(StyledFormMixin, forms.ModelForm):
+    class Meta:
+        model = ExchangeRate
+        fields = ('base_currency', 'quote_currency', 'rate', 'effective_date')
+        widgets = {'effective_date': forms.DateInput(attrs={'type': 'date'}), 'rate': forms.NumberInput(attrs={'step': '0.000001', 'min': '0.000001'})}
+
+    def clean(self):
+        cleaned = super().clean()
+        if cleaned.get('base_currency') == cleaned.get('quote_currency'):
+            self.add_error('quote_currency', 'Choose a different quote currency.')
+        if cleaned.get('rate') is not None and cleaned['rate'] <= 0:
+            self.add_error('rate', 'Exchange rate must be greater than zero.')
+        return cleaned
+
+
+class RestoreBackupForm(StyledFormMixin, forms.Form):
+    backup_file = forms.FileField(label='Backup JSON file')

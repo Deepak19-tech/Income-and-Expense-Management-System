@@ -1,9 +1,10 @@
 from django.contrib.auth import get_user_model
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 from django.urls import reverse
 
 from .forms import BudgetForm, ExpenseForm, IncomeForm, ProfileForm, RegistrationForm
-from .models import Budget, Category, Expense, Income
+from .models import AuditLog, Budget, Category, ExchangeRate, Expense, Income, Notification
 
 
 class FinanceAuthTests(TestCase):
@@ -181,6 +182,83 @@ class FinanceCrudTests(TestCase):
         Expense.objects.create(user=self.user, category=expense_category, amount='1.00', currency='USD', date='2026-08-03')
         response = self.client.get(reverse('budgets'))
         self.assertEqual(response.context['budget_rows'][0]['status'], 'over')
+
+    def test_budget_warning_creates_a_persistent_notification(self):
+        expense_category = Category.objects.create(user=self.user, name='Alerts', type='expense')
+        Budget.objects.create(user=self.user, category=expense_category, start_date='2026-08-01', end_date='2026-08-31', amount_limit='100.00')
+        Expense.objects.create(user=self.user, category=expense_category, amount='85.00', currency='USD', date='2026-08-05')
+
+        self.client.get(reverse('dashboard'))
+
+        notification = Notification.objects.get(user=self.user)
+        self.assertEqual(notification.level, 'warning')
+        self.assertIn('85.0% used', notification.message)
+        response = self.client.post(reverse('mark_notifications_read'), {'next': reverse('dashboard')})
+        self.assertRedirects(response, reverse('dashboard'))
+        notification.refresh_from_db()
+        self.assertTrue(notification.is_read)
+
+    def test_tools_save_exchange_rate_and_dashboard_converts_transaction(self):
+        income_category = Category.objects.create(user=self.user, name='USD Salary', type='income')
+        Income.objects.create(user=self.user, category=income_category, amount='10.00', currency='USD', date='2026-08-01')
+
+        response = self.client.post(reverse('financial_tools'), {
+            'action': 'exchange_rate', 'base_currency': 'USD', 'quote_currency': 'NPR',
+            'rate': '130.000000', 'effective_date': '2026-08-01',
+        })
+
+        self.assertRedirects(response, reverse('financial_tools'))
+        self.user.reporting_currency = 'NPR'
+        self.user.save(update_fields=['reporting_currency'])
+        response = self.client.get(reverse('dashboard'))
+        self.assertEqual(ExchangeRate.objects.get(user=self.user).rate, 130)
+        self.assertEqual(response.context['converted_current_income'], 1300)
+        self.assertTrue(response.context['conversion_complete'])
+
+    def test_backup_can_be_restored_without_overwriting_existing_data(self):
+        expense_category = Category.objects.create(user=self.user, name='Restored Food', type='expense')
+        Expense.objects.create(user=self.user, category=expense_category, amount='40.00', currency='USD', date='2026-08-01', description='Lunch')
+
+        backup = self.client.get(reverse('backup_data')).content
+        Expense.objects.all().delete()
+        Category.objects.filter(name='Restored Food').delete()
+        response = self.client.post(reverse('financial_tools'), {
+            'action': 'restore',
+            'backup_file': SimpleUploadedFile('backup.json', backup, content_type='application/json'),
+        })
+
+        self.assertRedirects(response, reverse('financial_tools'))
+        self.assertTrue(Expense.objects.filter(user=self.user, description='Lunch').exists())
+        self.assertTrue(AuditLog.objects.filter(user=self.user, object_type='Expense', action='created').exists())
+
+    def test_financial_tools_workflows_create_and_validate_records(self):
+        expense_category = Category.objects.create(user=self.user, name='Tools expense', type='expense')
+        income_category = Category.objects.create(user=self.user, name='Tools income', type='income')
+        member = get_user_model().objects.create_user(username='member', email='member@example.com', password='StrongPass123!')
+
+        for data in (
+            {'action': 'account', 'name': 'Cash', 'type': 'cash', 'opening_balance': '10', 'currency': 'USD'},
+            {'action': 'account', 'name': 'Bank', 'type': 'bank', 'opening_balance': '20', 'currency': 'USD'},
+            {'action': 'goal', 'name': 'Laptop', 'target_amount': '1000', 'current_amount': '100', 'target_date': '2026-12-01', 'color': '#1455c9'},
+            {'action': 'reminder', 'title': 'Internet', 'amount': '20', 'due_date': '2026-08-30', 'remind_days_before': '3'},
+            {'action': 'tag', 'name': 'Essential', 'color': '#1455c9'},
+            {'action': 'share', 'member_username': member.username, 'can_edit': 'on'},
+        ):
+            self.assertRedirects(self.client.post(reverse('financial_tools'), data), reverse('financial_tools'))
+
+        cash, bank = self.user.accounts.get(name='Cash'), self.user.accounts.get(name='Bank')
+        self.assertRedirects(self.client.post(reverse('financial_tools'), {'action': 'transfer', 'from_account': cash.id, 'to_account': bank.id, 'amount': '5', 'date': '2026-08-01', 'note': 'Top up'}), reverse('financial_tools'))
+        self.assertRedirects(self.client.post(reverse('financial_tools'), {'action': 'recurring', 'type': 'expense', 'category': expense_category.id, 'account': cash.id, 'amount': '12', 'currency': 'USD', 'frequency': 'monthly', 'next_due_date': '2026-08-01', 'description': 'Subscription'}), reverse('financial_tools'))
+        self.assertRedirects(self.client.post(reverse('run_recurring')), reverse('financial_tools'))
+        self.assertTrue(Expense.objects.filter(user=self.user, description='Subscription').exists())
+        self.assertEqual(self.user.savings_goals.count(), 1)
+        self.assertEqual(self.user.bill_reminders.count(), 1)
+        self.assertEqual(self.user.transaction_tags.count(), 1)
+        self.assertEqual(self.user.shared_finances.count(), 1)
+        self.assertEqual(self.user.account_transfers.count(), 1)
+
+        invalid = self.client.post(reverse('financial_tools'), {'action': 'recurring', 'type': 'expense', 'category': income_category.id, 'amount': '10', 'currency': 'USD', 'frequency': 'monthly', 'next_due_date': '2026-08-01'})
+        self.assertContains(invalid, 'Choose a category that matches the transaction type.')
 
     def test_income_and_expense_amounts_must_be_positive(self):
         expense_category = Category.objects.create(user=self.user, name='Utilities', type='expense')

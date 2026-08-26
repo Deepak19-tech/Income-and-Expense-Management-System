@@ -15,12 +15,12 @@
     </div>
     <div class="col-md-3">
         <div class="card stat-card stat-income">
-            <div class="stat-icon"><i class="bi bi-arrow-down-left"></i></div><div class="stat-label">Monthly income</div><p class="stat-value text-success">{{ current_currency_symbol }}{{ current_month_income }}</p>
+            <div class="stat-icon"><i class="bi bi-arrow-down-left"></i></div><div class="stat-label">Monthly income</div><p class="stat-value text-success">{{ current_currency_symbol }}{{ current_month_income }}</p>{% if conversion_complete %}<small class="text-muted">{{ reporting_currency }} {{ converted_current_income }}</small>{% endif %}
         </div>
     </div>
     <div class="col-md-3">
         <div class="card stat-card stat-expense">
-            <div class="stat-icon"><i class="bi bi-arrow-up-right"></i></div><div class="stat-label">Monthly expenses</div><p class="stat-value text-danger">{{ current_currency_symbol }}{{ current_month_expense }}</p>
+            <div class="stat-icon"><i class="bi bi-arrow-up-right"></i></div><div class="stat-label">Monthly expenses</div><p class="stat-value text-danger">{{ current_currency_symbol }}{{ current_month_expense }}</p>{% if conversion_complete %}<small class="text-muted">{{ reporting_currency }}{{ converted_current_expense }}</small>{% else %}<small class="text-muted">Add exchange rates for a complete {{ reporting_currency }} total.</small>{% endif %}
         </div>
     </div>
     <div class="col-md-3">

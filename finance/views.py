@@ -7,12 +7,13 @@ from django.contrib import messages
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
+from django.db import transaction
 from django.db.models import Sum
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
-from .forms import AccountForm, BillReminderForm, BudgetForm, CategoryForm, ExpenseForm, GoalForm, IncomeForm, ProfileForm, RecurringTransactionForm, RegistrationForm, ShareForm, TagForm, TransferForm
-from .models import Account, AccountTransfer, BillReminder, Budget, Category, Expense, ImportBatch, Income, RecurringTransaction, SavingsGoal, SharedAccess, TransactionTag, User
+from .forms import AccountForm, BillReminderForm, BudgetForm, CategoryForm, ExchangeRateForm, ExpenseForm, GoalForm, IncomeForm, ProfileForm, RecurringTransactionForm, RegistrationForm, RestoreBackupForm, ShareForm, TagForm, TransferForm
+from .models import Account, AccountTransfer, AuditLog, BillReminder, Budget, Category, ExchangeRate, Expense, ImportBatch, Income, Notification, RecurringTransaction, SavingsGoal, SharedAccess, TransactionTag, User
 from .validators import validate_com_email
 from io import BytesIO
 from django.http import HttpResponse
@@ -244,6 +245,13 @@ def logout_view(request):
     return redirect('login')
 
 
+@login_required
+def mark_notifications_read(request):
+    if request.method == 'POST':
+        Notification.objects.filter(user=request.user, is_read=False).update(is_read=True)
+    return redirect(request.POST.get('next') or 'dashboard')
+
+
 def _get_display_currency_symbol(recent_transactions, income_qs, expense_qs):
     for transaction in recent_transactions:
         if hasattr(transaction, 'currency_symbol'):
@@ -287,6 +295,47 @@ def _budget_metrics(limit, spent):
         'used_percent': used_percent,
         'status': status,
     }
+
+
+def _convert_amount(user, amount, source_currency, target_currency, date):
+    if source_currency == target_currency:
+        return amount
+    rate = ExchangeRate.objects.filter(
+        user=user, base_currency=source_currency, quote_currency=target_currency,
+        effective_date__lte=date,
+    ).order_by('-effective_date').first()
+    return amount * rate.rate if rate else None
+
+
+def _create_budget_notifications(user, budget_summary):
+    for budget in budget_summary:
+        status = budget['status']
+        if status == 'safe':
+            continue
+        labels = {'warning': 'Budget warning', 'limit': 'Budget limit reached', 'over': 'Budget exceeded'}
+        Notification.objects.get_or_create(
+            user=user,
+            dedupe_key=f"budget:{budget['category_name']}:{status}:{timezone.localdate():%Y-%m}",
+            defaults={
+                'title': labels[status],
+                'message': f"{budget['category_name']} is {budget['used_percent'] or 100}% used.",
+                'level': 'danger' if status == 'over' else 'warning',
+                'link': '/budgets/',
+            },
+        )
+
+
+def _create_due_notifications(user, today):
+    for bill in BillReminder.objects.filter(user=user, is_paid=False, due_date__lte=today + datetime.timedelta(days=7)):
+        Notification.objects.get_or_create(
+            user=user, dedupe_key=f'bill:{bill.pk}:{bill.due_date}',
+            defaults={'title': 'Bill due soon', 'message': f'{bill.title} is due on {bill.due_date:%b %d}.', 'level': 'warning', 'link': '/tools/'},
+        )
+    for recurring in RecurringTransaction.objects.filter(user=user, is_active=True, next_due_date__lte=today + datetime.timedelta(days=7)):
+        Notification.objects.get_or_create(
+            user=user, dedupe_key=f'recurring:{recurring.pk}:{recurring.next_due_date}',
+            defaults={'title': 'Recurring transaction due', 'message': f'{recurring.description or recurring.category.name} is due on {recurring.next_due_date:%b %d}.', 'level': 'info', 'link': '/tools/'},
+        )
 
 
 def _dashboard_insights(user, today, income_qs, expense_qs, budget_summary, all_time_income, all_time_expense):
@@ -381,6 +430,22 @@ def dashboard(request):
             'category_name': budget.category.name,
             **metrics,
         })
+    _create_budget_notifications(request.user, budget_summary)
+    converted_income = Decimal('0')
+    converted_expense = Decimal('0')
+    conversion_complete = True
+    for item in income_qs.filter(date__year=today.year, date__month=today.month):
+        converted = _convert_amount(request.user, item.amount, item.currency, request.user.reporting_currency, item.date)
+        if converted is None:
+            conversion_complete = False
+        else:
+            converted_income += converted
+    for item in expense_qs.filter(date__year=today.year, date__month=today.month):
+        converted = _convert_amount(request.user, item.amount, item.currency, request.user.reporting_currency, item.date)
+        if converted is None:
+            conversion_complete = False
+        else:
+            converted_expense += converted
     # Prepare chart data: last 6 months income/expense series and category breakdown
     def _get_last_n_months(n=6):
         labels = []
@@ -432,6 +497,10 @@ def dashboard(request):
             'budgets': budgets,
             'net_balance': current_month_income - current_month_expense,
             'savings_this_month': savings_this_month,
+            'reporting_currency': request.user.reporting_currency,
+            'converted_current_income': converted_income.quantize(Decimal('0.01')),
+            'converted_current_expense': converted_expense.quantize(Decimal('0.01')),
+            'conversion_complete': conversion_complete,
             'budget_alerts': budget_alerts,
             'budget_summary': budget_summary,
             'categories': Category.objects.filter(user=request.user),
@@ -779,10 +848,11 @@ def financial_tools(request):
         'account_form': AccountForm(user=request.user), 'transfer_form': TransferForm(user=request.user),
         'goal_form': GoalForm(user=request.user), 'recurring_form': RecurringTransactionForm(user=request.user),
         'reminder_form': BillReminderForm(user=request.user), 'tag_form': TagForm(user=request.user), 'share_form': ShareForm(),
+        'exchange_rate_form': ExchangeRateForm(), 'restore_form': RestoreBackupForm(),
     }
     if request.method == 'POST':
         action = request.POST.get('action')
-        form_key = {'account':'account_form', 'transfer':'transfer_form', 'goal':'goal_form', 'recurring':'recurring_form', 'reminder':'reminder_form', 'tag':'tag_form', 'share':'share_form'}.get(action)
+        form_key = {'account':'account_form', 'transfer':'transfer_form', 'goal':'goal_form', 'recurring':'recurring_form', 'reminder':'reminder_form', 'tag':'tag_form', 'share':'share_form', 'exchange_rate':'exchange_rate_form'}.get(action)
         if form_key:
             form_class = type(forms[form_key])
             kwargs = {'user': request.user} if action in ('account', 'transfer', 'goal', 'recurring', 'reminder', 'tag') else {}
@@ -801,6 +871,36 @@ def financial_tools(request):
                     item = form.save(commit=False); item.user = request.user; item.save()
                     messages.success(request, f'{action.title()} saved.')
                     return redirect('financial_tools')
+        elif action == 'restore':
+            form = RestoreBackupForm(request.POST, request.FILES)
+            forms['restore_form'] = form
+            if form.is_valid():
+                try:
+                    payload = json.load(form.cleaned_data['backup_file'])
+                    if payload.get('format') != 'hisabkitab-backup-v2':
+                        raise ValueError
+                    with transaction.atomic():
+                        for row in payload.get('categories', []):
+                            Category.objects.get_or_create(user=request.user, name=row['name'], type=row['type'])
+                        for row in payload.get('accounts', []):
+                            Account.objects.get_or_create(user=request.user, name=row['name'], defaults=row)
+                        restored = 0
+                        for key, model, category_type in (('income', Income, 'income'), ('expenses', Expense, 'expense')):
+                            for row in payload.get(key, []):
+                                row = row.copy()
+                                category_name = row.pop('category', f'Restored {category_type.title()}')
+                                category, _ = Category.objects.get_or_create(user=request.user, name=category_name, type=category_type)
+                                defaults = {field: row[field] for field in ('amount', 'currency', 'date', 'description', 'payment_method') if field in row}
+                                if model is Expense:
+                                    defaults.setdefault('payment_method', '')
+                                _, created = model.objects.get_or_create(user=request.user, category=category, **defaults)
+                                restored += int(created)
+                        for row in payload.get('goals', []):
+                            SavingsGoal.objects.update_or_create(user=request.user, name=row['name'], defaults=row)
+                    messages.success(request, f'Restored {restored} transaction(s). Existing records were kept.')
+                    return redirect('financial_tools')
+                except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                    form.add_error('backup_file', 'This is not a valid HisabKitab backup file.')
         elif action == 'import':
             source_file = request.FILES.get('file')
             if not source_file or not source_file.name.lower().endswith('.csv'):
@@ -825,11 +925,12 @@ def financial_tools(request):
                 messages.success(request, f'Imported {created} transaction(s).')
                 return redirect('financial_tools')
     today = timezone.localdate()
+    _create_due_notifications(request.user, today)
     due_reminders = BillReminder.objects.filter(user=request.user, is_paid=False, due_date__lte=today + datetime.timedelta(days=7)).order_by('due_date')
     goal_data = []
     for goal in SavingsGoal.objects.filter(user=request.user):
         goal_data.append((goal, min(100, int(goal.current_amount * 100 / goal.target_amount)) if goal.target_amount else 0))
-    return render(request, 'finance/financial_tools.html', {**forms, 'accounts':Account.objects.filter(user=request.user), 'transfers':AccountTransfer.objects.filter(user=request.user)[:5], 'goals':goal_data, 'recurring':RecurringTransaction.objects.filter(user=request.user), 'reminders':due_reminders, 'tags':TransactionTag.objects.filter(user=request.user), 'shares':SharedAccess.objects.filter(owner=request.user).select_related('member'), 'imports':ImportBatch.objects.filter(user=request.user)[:5]})
+    return render(request, 'finance/financial_tools.html', {**forms, 'accounts':Account.objects.filter(user=request.user), 'transfers':AccountTransfer.objects.filter(user=request.user)[:5], 'goals':goal_data, 'recurring':RecurringTransaction.objects.filter(user=request.user), 'reminders':due_reminders, 'tags':TransactionTag.objects.filter(user=request.user), 'shares':SharedAccess.objects.filter(owner=request.user).select_related('member'), 'imports':ImportBatch.objects.filter(user=request.user)[:5], 'exchange_rates':ExchangeRate.objects.filter(user=request.user)[:8], 'audit_logs':AuditLog.objects.filter(user=request.user)[:8]})
 
 
 @login_required
@@ -848,7 +949,10 @@ def run_recurring(request):
 
 @login_required
 def backup_data(request):
-    data = {'exported_at': timezone.now().isoformat(), 'accounts': list(Account.objects.filter(user=request.user).values('name','type','opening_balance','currency')), 'income': list(Income.objects.filter(user=request.user).values('amount','currency','date','description')), 'expenses': list(Expense.objects.filter(user=request.user).values('amount','currency','date','description','payment_method')), 'goals': list(SavingsGoal.objects.filter(user=request.user).values('name','target_amount','current_amount','target_date'))}
+    data = {'format': 'hisabkitab-backup-v2', 'exported_at': timezone.now().isoformat(), 'categories': list(Category.objects.filter(user=request.user).values('name','type')), 'accounts': list(Account.objects.filter(user=request.user).values('name','type','opening_balance','currency')), 'income': list(Income.objects.filter(user=request.user).values('amount','currency','date','description','category__name')), 'expenses': list(Expense.objects.filter(user=request.user).values('amount','currency','date','description','payment_method','category__name')), 'goals': list(SavingsGoal.objects.filter(user=request.user).values('name','target_amount','current_amount','target_date'))}
+    for key in ('income', 'expenses'):
+        for row in data[key]:
+            row['category'] = row.pop('category__name')
     response = HttpResponse(json.dumps(data, default=str, indent=2), content_type='application/json')
     response['Content-Disposition'] = 'attachment; filename="hisabkitab-backup.json"'
     return response

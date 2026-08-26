@@ -9,6 +9,7 @@ class User(AbstractUser):
     full_name = models.CharField(max_length=150, blank=True)
     email = models.EmailField(unique=True, validators=[validate_com_email])
     phone_number = models.CharField(max_length=16, unique=True, blank=True, null=True)
+    reporting_currency = models.CharField(max_length=10, default='USD')
 
     def __str__(self):
         return self.get_full_name() or self.username
@@ -243,3 +244,56 @@ class SharedAccess(models.Model):
     can_edit = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     class Meta: unique_together = ('owner', 'member')
+
+
+class ExchangeRate(models.Model):
+    """A user-managed rate used to convert transactions for reporting."""
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='exchange_rates')
+    base_currency = models.CharField(max_length=10)
+    quote_currency = models.CharField(max_length=10)
+    rate = models.DecimalField(max_digits=16, decimal_places=6)
+    effective_date = models.DateField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('user', 'base_currency', 'quote_currency', 'effective_date')
+        ordering = ['-effective_date', 'base_currency', 'quote_currency']
+
+    def clean(self):
+        if self.base_currency == self.quote_currency:
+            raise ValidationError({'quote_currency': 'Choose a different quote currency.'})
+        if self.rate <= 0:
+            raise ValidationError({'rate': 'Exchange rate must be greater than zero.'})
+
+    def __str__(self):
+        return f'1 {self.base_currency} = {self.rate} {self.quote_currency}'
+
+
+class Notification(models.Model):
+    LEVELS = (('info', 'Info'), ('warning', 'Warning'), ('danger', 'Danger'), ('success', 'Success'))
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='notifications')
+    title = models.CharField(max_length=160)
+    message = models.CharField(max_length=500)
+    level = models.CharField(max_length=10, choices=LEVELS, default='info')
+    link = models.CharField(max_length=255, blank=True)
+    dedupe_key = models.CharField(max_length=200, blank=True)
+    is_read = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        constraints = [models.UniqueConstraint(fields=('user', 'dedupe_key'), condition=~models.Q(dedupe_key=''), name='unique_notification_dedupe_key')]
+
+
+class AuditLog(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='audit_logs')
+    action = models.CharField(max_length=40)
+    object_type = models.CharField(max_length=80)
+    object_id = models.PositiveIntegerField(null=True, blank=True)
+    description = models.CharField(max_length=500)
+    before = models.JSONField(default=dict, blank=True)
+    after = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
