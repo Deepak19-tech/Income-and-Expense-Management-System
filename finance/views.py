@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import json
 import math
 from django.utils.safestring import mark_safe
@@ -6,12 +6,14 @@ from django.utils.safestring import mark_safe
 from django.contrib import messages
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.decorators import login_required
+from django.core.exceptions import ValidationError
 from django.db.models import Sum
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
 from .forms import AccountForm, BillReminderForm, BudgetForm, CategoryForm, ExpenseForm, GoalForm, IncomeForm, ProfileForm, RecurringTransactionForm, RegistrationForm, ShareForm, TagForm, TransferForm
-from .models import Account, AccountTransfer, BillReminder, Budget, Category, Expense, ImportBatch, Income, RecurringTransaction, SavingsGoal, SharedAccess, TransactionTag
+from .models import Account, AccountTransfer, BillReminder, Budget, Category, Expense, ImportBatch, Income, RecurringTransaction, SavingsGoal, SharedAccess, TransactionTag, User
+from .validators import validate_com_email
 from io import BytesIO
 from django.http import HttpResponse
 import datetime
@@ -174,6 +176,19 @@ def quick_transaction(request):
         messages.error(request, 'Invalid category selected.')
         return redirect('dashboard')
 
+    if tx_type not in ('income', 'expense') or category.type != tx_type:
+        messages.error(request, 'Select a category that matches the transaction type.')
+        return redirect('dashboard')
+
+    try:
+        amount = Decimal(amount)
+    except (InvalidOperation, TypeError):
+        messages.error(request, 'Enter a valid transaction amount.')
+        return redirect('dashboard')
+    if amount <= 0:
+        messages.error(request, 'Transaction amount must be greater than zero.')
+        return redirect('dashboard')
+
     if tx_type == 'income':
         income = Income(user=request.user, category=category, amount=amount, currency=currency or 'USD', date=date or timezone.now().date(), description=description)
         income.save()
@@ -205,8 +220,16 @@ def register_view(request):
 
 def login_view(request):
     if request.method == 'POST':
-        username = request.POST.get('username')
+        identifier = request.POST.get('username', '').strip()
         password = request.POST.get('password')
+        username = identifier
+        if '@' in identifier:
+            try:
+                validate_com_email(identifier.lower())
+                user = User.objects.filter(email__iexact=identifier).first()
+                username = user.username if user else ''
+            except ValidationError:
+                username = ''
         user = authenticate(request, username=username, password=password)
         if user is not None:
             login(request, user)
@@ -234,15 +257,46 @@ def _get_display_currency_symbol(recent_transactions, income_qs, expense_qs):
     return '$'
 
 
+def _budget_metrics(limit, spent):
+    """Apply the monthly threshold rule consistently across budget views."""
+    remaining = limit - spent
+    over_amount = max(Decimal('0'), -remaining)
+    if limit == 0:
+        status = 'over' if spent > 0 else 'safe'
+        percent = 100 if spent > 0 else 0
+        used_percent = None
+    else:
+        used_percent = (spent / limit * 100).quantize(Decimal('0.1'))
+        # A progress bar cannot be wider than its container, but the displayed
+        # percentage below it still shows overspending (for example, 125%).
+        percent = min(100, int(used_percent))
+        if spent > limit:
+            status = 'over'
+        elif spent == limit:
+            status = 'limit'
+        elif spent >= limit * Decimal('0.8'):
+            status = 'warning'
+        else:
+            status = 'safe'
+    return {
+        'limit': limit,
+        'spent': spent,
+        'remaining': remaining,
+        'over_amount': over_amount,
+        'percent': percent,
+        'used_percent': used_percent,
+        'status': status,
+    }
+
+
 @login_required
 def dashboard(request):
     today = timezone.now().date()
-    month_start = today.replace(day=1)
     income_qs = Income.objects.filter(user=request.user)
     expense_qs = Expense.objects.filter(user=request.user)
 
-    current_month_income = income_qs.filter(date__gte=month_start).aggregate(total=Sum('amount'))['total'] or Decimal('0')
-    current_month_expense = expense_qs.filter(date__gte=month_start).aggregate(total=Sum('amount'))['total'] or Decimal('0')
+    current_month_income = income_qs.filter(date__year=today.year, date__month=today.month).aggregate(total=Sum('amount'))['total'] or Decimal('0')
+    current_month_expense = expense_qs.filter(date__year=today.year, date__month=today.month).aggregate(total=Sum('amount'))['total'] or Decimal('0')
     all_time_income = income_qs.aggregate(total=Sum('amount'))['total'] or Decimal('0')
     all_time_expense = expense_qs.aggregate(total=Sum('amount'))['total'] or Decimal('0')
     savings_this_month = current_month_income - current_month_expense
@@ -254,34 +308,17 @@ def dashboard(request):
 
     current_currency_symbol = _get_display_currency_symbol(recent_transactions, income_qs, expense_qs)
     expense_breakdown = expense_qs.values('category__name').annotate(total=Sum('amount')).order_by('-total')[:5]
-    budgets = Budget.objects.filter(user=request.user).select_related('category')
-    current_month_expenses_by_category = {
-        item['category_id']: item['total']
-        for item in expense_qs.filter(date__gte=month_start).values('category_id').annotate(total=Sum('amount'))
-    }
+    budgets = Budget.objects.filter(user=request.user, start_date__lte=today, end_date__gte=today).select_related('category')
     budget_summary = []
     budget_alerts = 0
     for budget in budgets:
-        spent = current_month_expenses_by_category.get(budget.category_id, Decimal('0'))
-        limit = budget.amount_limit or Decimal('0')
-        if limit <= 0:
-            percent = 0
-        else:
-            percent = int(min(100, max(0, float((spent / limit) * Decimal('100')))))
-        status = 'safe'
-        if spent >= limit and limit > 0:
-            status = 'over'
-            budget_alerts += 1
-        elif limit > 0 and spent >= (limit * Decimal('0.9')):
-            status = 'warning'
+        spent = expense_qs.filter(category=budget.category, date__gte=budget.start_date, date__lte=budget.end_date).aggregate(total=Sum('amount'))['total'] or Decimal('0')
+        metrics = _budget_metrics(budget.amount_limit, spent)
+        if metrics['status'] != 'safe':
             budget_alerts += 1
         budget_summary.append({
             'category_name': budget.category.name,
-            'limit': limit,
-            'spent': spent,
-            'remaining': limit - spent,
-            'percent': percent,
-            'status': status,
+            **metrics,
         })
     # Prepare chart data: last 6 months income/expense series and category breakdown
     def _get_last_n_months(n=6):
@@ -347,7 +384,7 @@ def dashboard(request):
 def category_list(request):
     categories = Category.objects.filter(user=request.user)
     if request.method == 'POST':
-        form = CategoryForm(request.POST)
+        form = CategoryForm(request.POST, user=request.user)
         if form.is_valid():
             category = form.save(commit=False)
             category.user = request.user
@@ -355,7 +392,7 @@ def category_list(request):
             messages.success(request, 'Category created successfully.')
             return redirect('categories')
     else:
-        form = CategoryForm()
+        form = CategoryForm(user=request.user)
     return render(request, 'finance/categories.html', {'categories': categories, 'form': form})
 
 
@@ -640,36 +677,49 @@ def profile_view(request):
 
 @login_required
 def budgets(request):
-    budgets = Budget.objects.filter(user=request.user).select_related('category')
+    budgets = Budget.objects.filter(user=request.user).select_related('category').order_by('-start_date', 'category__name')
     if request.method == 'POST':
         form = BudgetForm(request.POST, user=request.user)
         if form.is_valid():
-            budget = form.save(commit=False)
-            budget.user = request.user
-            budget.save()
-            messages.success(request, 'Budget saved.')
+            _, created = Budget.objects.update_or_create(
+                user=request.user,
+                category=form.cleaned_data['category'],
+                start_date=form.cleaned_data['start_date'],
+                end_date=form.cleaned_data['end_date'],
+                defaults={'amount_limit': form.cleaned_data['amount_limit']},
+            )
+            messages.success(request, 'Budget created.' if created else 'Budget limit updated.')
             return redirect('budgets')
     else:
-        form = BudgetForm(user=request.user)
+        today = timezone.localdate()
+        form = BudgetForm(user=request.user, initial={'start_date': today, 'end_date': today.replace(day=28) + datetime.timedelta(days=4) - datetime.timedelta(days=(today.replace(day=28) + datetime.timedelta(days=4)).day)})
+
+    budget_rows = [
+        {'budget': budget, **_budget_metrics(
+            budget.amount_limit,
+            Expense.objects.filter(user=request.user, category=budget.category, date__gte=budget.start_date, date__lte=budget.end_date).aggregate(total=Sum('amount'))['total'] or Decimal('0'),
+        )}
+        for budget in budgets
+    ]
 
     current_currency_symbol = _get_display_currency_symbol([], Income.objects.filter(user=request.user), Expense.objects.filter(user=request.user))
-    return render(request, 'finance/budgets.html', {'budgets': budgets, 'form': form, 'current_currency_symbol': current_currency_symbol})
+    return render(request, 'finance/budgets.html', {'budget_rows': budget_rows, 'form': form, 'current_currency_symbol': current_currency_symbol})
 
 
 @login_required
 def financial_tools(request):
     """A practical command centre for accounts, goals, automations, reminders and sharing."""
     forms = {
-        'account_form': AccountForm(), 'transfer_form': TransferForm(user=request.user),
-        'goal_form': GoalForm(), 'recurring_form': RecurringTransactionForm(user=request.user),
-        'reminder_form': BillReminderForm(), 'tag_form': TagForm(), 'share_form': ShareForm(),
+        'account_form': AccountForm(user=request.user), 'transfer_form': TransferForm(user=request.user),
+        'goal_form': GoalForm(user=request.user), 'recurring_form': RecurringTransactionForm(user=request.user),
+        'reminder_form': BillReminderForm(user=request.user), 'tag_form': TagForm(user=request.user), 'share_form': ShareForm(),
     }
     if request.method == 'POST':
         action = request.POST.get('action')
         form_key = {'account':'account_form', 'transfer':'transfer_form', 'goal':'goal_form', 'recurring':'recurring_form', 'reminder':'reminder_form', 'tag':'tag_form', 'share':'share_form'}.get(action)
         if form_key:
             form_class = type(forms[form_key])
-            kwargs = {'user': request.user} if action in ('transfer', 'recurring') else {}
+            kwargs = {'user': request.user} if action in ('account', 'transfer', 'goal', 'recurring', 'reminder', 'tag') else {}
             form = form_class(request.POST, **kwargs)
             forms[form_key] = form
             if form.is_valid():

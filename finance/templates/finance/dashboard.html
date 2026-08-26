@@ -77,10 +77,10 @@
             <div class="mb-3">
                 <div class="d-flex justify-content-between mb-1">
                     <span>{{ item.category_name }}</span>
-                    <span>{% if item.status == 'over' %}<span class="text-danger">Over budget</span>{% elif item.status == 'warning' %}<span class="text-warning">Near limit</span>{% else %}<span class="text-success">On track</span>{% endif %}</span>
+                    <span>{% if item.status == 'over' %}<span class="text-danger">Over budget</span>{% elif item.status == 'limit' %}<span class="text-warning">Limit reached</span>{% elif item.status == 'warning' %}<span class="text-warning">80% warning</span>{% else %}<span class="text-success">On track</span>{% endif %}</span>
                 </div>
                 <div class="progress" style="height: 8px;">
-                    <div class="progress-bar {% if item.status == 'over' %}bg-danger{% elif item.status == 'warning' %}bg-warning{% else %}bg-success{% endif %}" role="progressbar" style="width: {{ item.percent }}%"></div>
+                    <div class="progress-bar {% if item.status == 'over' %}bg-danger{% elif item.status == 'warning' or item.status == 'limit' %}bg-warning{% else %}bg-success{% endif %}" role="progressbar" style="width: {{ item.percent }}%"></div>
                 </div>
                 <small class="text-muted">Spent {{ current_currency_symbol }}{{ item.spent }} of {{ current_currency_symbol }}{{ item.limit }} (remaining {{ current_currency_symbol }}{{ item.remaining }})</small>
             </div>

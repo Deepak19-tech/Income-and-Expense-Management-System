@@ -35,3 +35,12 @@
     </div>
 </div>
 {% endblock %}
+{% block extra_js %}
+<script>
+    const emailField = document.getElementById('id_email');
+    emailField?.addEventListener('input', () => {
+        const value = emailField.value.trim();
+        emailField.setCustomValidity(value && !/^[^\s@]+@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+com$/i.test(value) ? 'Enter a valid email address ending in .com.' : '');
+    });
+</script>
+{% endblock %}

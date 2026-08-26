@@ -38,6 +38,7 @@ INSTALLED_APPS = [
 
 AUTH_USER_MODEL = 'finance.User'
 LOGIN_URL = 'login'
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # Password-reset emails use the console locally. Configure SMTP values in .env
 # before deploying so users receive reset links by email.

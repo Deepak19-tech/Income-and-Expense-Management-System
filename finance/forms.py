@@ -1,7 +1,19 @@
 from django import forms
 from django.contrib.auth.forms import UserCreationForm
+from django.core.validators import RegexValidator
 
 from .models import Account, AccountTransfer, BillReminder, Budget, Category, Expense, Income, RecurringTransaction, SavingsGoal, SharedAccess, TransactionTag, User
+from .validators import validate_com_email
+
+
+username_starts_with_letter = RegexValidator(
+    regex=r'^[A-Za-z]',
+    message='Username must start with a letter.',
+)
+phone_number_validator = RegexValidator(
+    regex=r'^\+?[0-9]{7,15}$',
+    message='Enter a valid phone number with 7 to 15 digits; a leading + is allowed.',
+)
 
 
 class StyledFormMixin:
@@ -16,21 +28,35 @@ class StyledFormMixin:
 class RegistrationForm(StyledFormMixin, UserCreationForm):
     full_name = forms.CharField(max_length=150, required=True)
     email = forms.EmailField(required=True)
+    phone_number = forms.CharField(max_length=16, required=True, validators=[phone_number_validator])
 
     class Meta:
         model = User
-        fields = ('full_name', 'email', 'username', 'password1', 'password2')
+        fields = ('full_name', 'email', 'phone_number', 'username', 'password1', 'password2')
+
+    def clean_username(self):
+        username = self.cleaned_data['username']
+        username_starts_with_letter(username)
+        return username
 
     def clean_email(self):
-        email = self.cleaned_data.get('email')
+        email = self.cleaned_data['email'].strip().lower()
+        validate_com_email(email)
         if User.objects.filter(email__iexact=email).exists():
             raise forms.ValidationError('A user with this email already exists.')
         return email
+
+    def clean_phone_number(self):
+        phone_number = self.cleaned_data['phone_number']
+        if User.objects.filter(phone_number=phone_number).exists():
+            raise forms.ValidationError('A user with this phone number already exists.')
+        return phone_number
 
     def save(self, commit=True):
         user = super().save(commit=False)
         user.full_name = self.cleaned_data['full_name']
         user.email = self.cleaned_data['email']
+        user.phone_number = self.cleaned_data['phone_number']
         if commit:
             user.save()
         return user
@@ -40,6 +66,16 @@ class CategoryForm(StyledFormMixin, forms.ModelForm):
     class Meta:
         model = Category
         fields = ('name', 'type')
+
+    def __init__(self, *args, user=None, **kwargs):
+        self.user = user
+        super().__init__(*args, **kwargs)
+
+    def clean(self):
+        cleaned = super().clean()
+        if self.user and Category.objects.filter(user=self.user, name__iexact=cleaned.get('name', ''), type=cleaned.get('type')).exclude(pk=self.instance.pk).exists():
+            self.add_error('name', 'You already have a category with this name and type.')
+        return cleaned
 
 
 class IncomeForm(StyledFormMixin, forms.ModelForm):
@@ -59,6 +95,12 @@ class IncomeForm(StyledFormMixin, forms.ModelForm):
             self.fields['account'].queryset = Account.objects.filter(user=user, is_active=True)
             self.fields['tags'].queryset = TransactionTag.objects.filter(user=user)
 
+    def clean_amount(self):
+        amount = self.cleaned_data['amount']
+        if amount <= 0:
+            raise forms.ValidationError('Income amount must be greater than zero.')
+        return amount
+
 
 class ExpenseForm(StyledFormMixin, forms.ModelForm):
     class Meta:
@@ -77,36 +119,116 @@ class ExpenseForm(StyledFormMixin, forms.ModelForm):
             self.fields['account'].queryset = Account.objects.filter(user=user, is_active=True)
             self.fields['tags'].queryset = TransactionTag.objects.filter(user=user)
 
+    def clean_amount(self):
+        amount = self.cleaned_data['amount']
+        if amount <= 0:
+            raise forms.ValidationError('Expense amount must be greater than zero.')
+        return amount
+
 
 class BudgetForm(StyledFormMixin, forms.ModelForm):
     class Meta:
         model = Budget
-        fields = ('category', 'month', 'amount_limit')
-        widgets = {'month': forms.TextInput(attrs={'placeholder': 'YYYY-MM'})}
+        fields = ('category', 'start_date', 'end_date', 'amount_limit')
+        widgets = {
+            'start_date': forms.DateInput(attrs={'type': 'date'}),
+            'end_date': forms.DateInput(attrs={'type': 'date'}),
+        }
+        labels = {
+            'category': 'Expense category',
+            'start_date': 'Start date',
+            'end_date': 'End date',
+            'amount_limit': 'Budget limit',
+        }
+        help_texts = {
+            'amount_limit': 'Set 0 when no spending is allowed for this category.',
+        }
 
     def __init__(self, *args, **kwargs):
         user = kwargs.pop('user', None)
+        self.user = user
         super().__init__(*args, **kwargs)
         if user is not None:
-            self.fields['category'].queryset = Category.objects.filter(user=user)
+            # A budget must only ever be attached to one of the current user's
+            # expense categories.  Give the select an explicit prompt so an
+            # empty selection is understandable instead of looking like a
+            # missing field.
+            self.fields['category'].queryset = Category.objects.filter(
+                user=user,
+                type='expense',
+            ).order_by('name')
+            self.fields['category'].empty_label = 'Choose an expense category'
 
+    def clean_amount_limit(self):
+        amount_limit = self.cleaned_data['amount_limit']
+        if amount_limit < 0:
+            raise forms.ValidationError('Budget cannot be negative.')
+        return amount_limit
+
+    def clean(self):
+        cleaned = super().clean()
+        category = cleaned.get('category')
+        start_date = cleaned.get('start_date')
+        end_date = cleaned.get('end_date')
+        if start_date and end_date and end_date < start_date:
+            self.add_error('end_date', 'End date must be on or after the start date.')
+        if self.user and category and start_date and end_date:
+            overlaps = Budget.objects.filter(
+                user=self.user, category=category,
+                start_date__lte=end_date, end_date__gte=start_date,
+            ).exclude(pk=self.instance.pk).exclude(start_date=start_date, end_date=end_date)
+            if overlaps.exists():
+                self.add_error('end_date', 'This budget period overlaps an existing budget for this category.')
+        return cleaned
 
 class ProfileForm(StyledFormMixin, forms.ModelForm):
     password = forms.CharField(required=False, widget=forms.PasswordInput, help_text='Leave blank to keep current password')
 
     class Meta:
         model = User
-        fields = ('full_name', 'email', 'username')
+        fields = ('full_name', 'email', 'phone_number', 'username')
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields['password'].required = False
+        self.fields['phone_number'].required = True
+
+    def clean_username(self):
+        username = self.cleaned_data['username']
+        username_starts_with_letter(username)
+        if User.objects.filter(username__iexact=username).exclude(pk=self.instance.pk).exists():
+            raise forms.ValidationError('A user with this username already exists.')
+        return username
+
+    def clean_email(self):
+        email = self.cleaned_data['email'].strip().lower()
+        validate_com_email(email)
+        if User.objects.filter(email__iexact=email).exclude(pk=self.instance.pk).exists():
+            raise forms.ValidationError('A user with this email already exists.')
+        return email
+
+    def clean_phone_number(self):
+        phone_number = self.cleaned_data['phone_number']
+        phone_number_validator(phone_number)
+        if User.objects.filter(phone_number=phone_number).exclude(pk=self.instance.pk).exists():
+            raise forms.ValidationError('A user with this phone number already exists.')
+        return phone_number
 
 
 class AccountForm(StyledFormMixin, forms.ModelForm):
     class Meta:
         model = Account
         fields = ('name', 'type', 'opening_balance', 'currency')
+
+    def __init__(self, *args, user=None, **kwargs):
+        self.user = user
+        super().__init__(*args, **kwargs)
+
+    def clean_name(self):
+        name = self.cleaned_data['name']
+        if self.user and Account.objects.filter(user=self.user, name__iexact=name).exclude(pk=self.instance.pk).exists():
+            raise forms.ValidationError('You already have an account with this name.')
+        return name
 
 
 class TransferForm(StyledFormMixin, forms.ModelForm):
@@ -133,6 +255,16 @@ class GoalForm(StyledFormMixin, forms.ModelForm):
         fields = ('name', 'target_amount', 'current_amount', 'target_date', 'color')
         widgets = {'target_date': forms.DateInput(attrs={'type': 'date'}), 'color': forms.TextInput(attrs={'type': 'color'})}
 
+    def __init__(self, *args, user=None, **kwargs):
+        self.user = user
+        super().__init__(*args, **kwargs)
+
+    def clean_name(self):
+        name = self.cleaned_data['name']
+        if self.user and SavingsGoal.objects.filter(user=self.user, name__iexact=name).exclude(pk=self.instance.pk).exists():
+            raise forms.ValidationError('You already have a goal with this name.')
+        return name
+
 
 class RecurringTransactionForm(StyledFormMixin, forms.ModelForm):
     class Meta:
@@ -152,12 +284,32 @@ class BillReminderForm(StyledFormMixin, forms.ModelForm):
         fields = ('title', 'amount', 'due_date', 'remind_days_before')
         widgets = {'due_date': forms.DateInput(attrs={'type': 'date'})}
 
+    def __init__(self, *args, user=None, **kwargs):
+        self.user = user
+        super().__init__(*args, **kwargs)
+
+    def clean_title(self):
+        title = self.cleaned_data['title']
+        if self.user and BillReminder.objects.filter(user=self.user, title__iexact=title).exclude(pk=self.instance.pk).exists():
+            raise forms.ValidationError('You already have a bill reminder with this title.')
+        return title
+
 
 class TagForm(StyledFormMixin, forms.ModelForm):
     class Meta:
         model = TransactionTag
         fields = ('name', 'color')
         widgets = {'color': forms.TextInput(attrs={'type': 'color'})}
+
+    def __init__(self, *args, user=None, **kwargs):
+        self.user = user
+        super().__init__(*args, **kwargs)
+
+    def clean_name(self):
+        name = self.cleaned_data['name']
+        if self.user and TransactionTag.objects.filter(user=self.user, name__iexact=name).exclude(pk=self.instance.pk).exists():
+            raise forms.ValidationError('You already have a tag with this name.')
+        return name
 
 
 class ShareForm(StyledFormMixin, forms.ModelForm):
