@@ -25,6 +25,15 @@ class StyledFormMixin:
             field.widget.attrs['class'] = f"{field.widget.attrs.get('class', '')} {css_class}".strip()
 
 
+def add_currency_choices(field):
+    """Render free-text currency fields as the same select used by transactions."""
+    field.choices = Income.CURRENCY_CHOICES
+    field.widget = forms.Select(
+        choices=Income.CURRENCY_CHOICES,
+        attrs={'class': 'form-select'},
+    )
+
+
 class RegistrationForm(StyledFormMixin, UserCreationForm):
     full_name = forms.CharField(max_length=150, required=True)
     email = forms.EmailField(required=True)
@@ -127,6 +136,9 @@ class ExpenseForm(StyledFormMixin, forms.ModelForm):
 
 
 class BudgetForm(StyledFormMixin, forms.ModelForm):
+    MINIMUM_BUDGET_LIMIT = 10000
+    MAXIMUM_BUDGET_LIMIT = 2100000
+
     class Meta:
         model = Budget
         fields = ('category', 'start_date', 'end_date', 'amount_limit')
@@ -141,7 +153,7 @@ class BudgetForm(StyledFormMixin, forms.ModelForm):
             'amount_limit': 'Budget limit',
         }
         help_texts = {
-            'amount_limit': 'Set 0 when no spending is allowed for this category.',
+            'amount_limit': 'Enter an amount from Rs 10,000 to Rs 21,00,000.',
         }
 
     def __init__(self, *args, **kwargs):
@@ -158,11 +170,18 @@ class BudgetForm(StyledFormMixin, forms.ModelForm):
                 type='expense',
             ).order_by('name')
             self.fields['category'].empty_label = 'Choose an expense category'
+        self.fields['amount_limit'].widget.attrs.update({
+            'min': self.MINIMUM_BUDGET_LIMIT,
+            'max': self.MAXIMUM_BUDGET_LIMIT,
+            'step': '0.01',
+        })
 
     def clean_amount_limit(self):
         amount_limit = self.cleaned_data['amount_limit']
-        if amount_limit < 0:
-            raise forms.ValidationError('Budget cannot be negative.')
+        if amount_limit < self.MINIMUM_BUDGET_LIMIT:
+            raise forms.ValidationError('Budget must be at least Rs 10,000.')
+        if amount_limit > self.MAXIMUM_BUDGET_LIMIT:
+            raise forms.ValidationError('Budget cannot exceed Rs 21,00,000.')
         return amount_limit
 
     def clean(self):
@@ -192,6 +211,7 @@ class ProfileForm(StyledFormMixin, forms.ModelForm):
         super().__init__(*args, **kwargs)
         self.fields['password'].required = False
         self.fields['phone_number'].required = True
+        add_currency_choices(self.fields['reporting_currency'])
 
     def clean_username(self):
         username = self.cleaned_data['username']
@@ -223,6 +243,7 @@ class AccountForm(StyledFormMixin, forms.ModelForm):
     def __init__(self, *args, user=None, **kwargs):
         self.user = user
         super().__init__(*args, **kwargs)
+        add_currency_choices(self.fields['currency'])
 
     def clean_name(self):
         name = self.cleaned_data['name']
@@ -289,6 +310,7 @@ class RecurringTransactionForm(StyledFormMixin, forms.ModelForm):
         widgets = {'next_due_date': forms.DateInput(attrs={'type': 'date'})}
     def __init__(self, *args, user=None, **kwargs):
         super().__init__(*args, **kwargs)
+        add_currency_choices(self.fields['currency'])
         if user:
             self.fields['category'].queryset = Category.objects.filter(user=user)
             self.fields['account'].queryset = Account.objects.filter(user=user, is_active=True)
@@ -353,6 +375,11 @@ class ExchangeRateForm(StyledFormMixin, forms.ModelForm):
         model = ExchangeRate
         fields = ('base_currency', 'quote_currency', 'rate', 'effective_date')
         widgets = {'effective_date': forms.DateInput(attrs={'type': 'date'}), 'rate': forms.NumberInput(attrs={'step': '0.000001', 'min': '0.000001'})}
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        add_currency_choices(self.fields['base_currency'])
+        add_currency_choices(self.fields['quote_currency'])
 
     def clean(self):
         cleaned = super().clean()

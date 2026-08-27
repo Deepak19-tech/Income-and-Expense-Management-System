@@ -4,7 +4,7 @@
 <section aria-labelledby="budget-section-title">
 <h2 id="budget-section-title" class="mb-2">Set a budget</h2>
 <div class="card shadow-sm p-4">
-    <p class="text-muted">Set one budget limit for an expense category and date range. At 80% the system warns you, at 100% the limit is reached, and only spending above the limit is exceeded. A zero limit means no spending is allocated.</p>
+    <p class="text-muted">Set one budget limit for an expense category and date range. Budget limits range from Rs 10,000 to Rs 21,00,000. At 80% the system warns you, and at 100% the limit is reached.</p>
     {% if not form.category.field.queryset.exists %}
     <div class="alert alert-info" role="status">
         Add an expense category before setting a budget. <a href="{% url 'categories' %}">Manage categories</a>
@@ -23,12 +23,45 @@
         {% endfor %}
         <div class="col-md-12"><button class="btn btn-primary" type="submit">Set budget</button></div>
     </form>
+
+    <section class="border-top pt-4 mb-4" aria-labelledby="expense-threshold-title">
+        <h3 id="expense-threshold-title" class="h5">Expense categories above a threshold</h3>
+        <p class="text-muted small">This report adds expenses by category only within the selected date range; it does not use budget limits.</p>
+        <form method="get" class="row g-3 align-items-end mb-3">
+            <div class="col-md-4">
+                <label class="form-label" for="expense_threshold">Spending threshold</label>
+                <input id="expense_threshold" class="form-control" type="number" name="threshold" min="0" max="2100000" step="0.01" value="{{ expense_threshold }}" required>
+            </div>
+            <div class="col-md-3">
+                <label class="form-label" for="threshold_start_date">From</label>
+                <input id="threshold_start_date" class="form-control" type="date" name="threshold_start_date" value="{{ expense_threshold_start_date|date:'Y-m-d' }}" required>
+            </div>
+            <div class="col-md-3">
+                <label class="form-label" for="threshold_end_date">To</label>
+                <input id="threshold_end_date" class="form-control" type="date" name="threshold_end_date" value="{{ expense_threshold_end_date|date:'Y-m-d' }}" required>
+            </div>
+            <div class="col-md-auto"><button class="btn btn-outline-primary" type="submit">Show categories</button></div>
+        </form>
+        <div class="table-responsive">
+            <table class="table table-sm align-middle mb-0">
+                <thead><tr><th>Category</th><th>Currency</th><th>Total spent</th><th>Transactions</th></tr></thead>
+                <tbody>
+                    {% for expense in expense_categories_over_threshold %}
+                    <tr><td>{{ expense.category__name }}</td><td>{{ expense.currency }}</td><td>{{ expense.currency }} {{ expense.total_spent }}</td><td>{{ expense.transaction_count }}</td></tr>
+                    {% empty %}<tr><td colspan="4">No expense categories exceed this threshold.</td></tr>{% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+    <div class="table-responsive">
     <table class="table table-striped">
-        <thead><tr><th>Category</th><th>Start date</th><th>End date</th><th>Budget</th><th>Spent</th><th>Usage</th><th>Remaining</th><th>Status</th></tr></thead>
+        <thead><tr><th>Category</th><th>Actions</th><th>Start date</th><th>End date</th><th>Budget</th><th>Spent</th><th>Usage</th><th>Remaining</th><th>Status</th></tr></thead>
         <tbody>
             {% for row in budget_rows %}
             <tr>
-                <td>{{ row.budget.category.name }}</td><td>{{ row.budget.start_date }}</td><td>{{ row.budget.end_date }}</td>
+                <td>{{ row.budget.category.name }}</td>
+                <td class="text-nowrap"><button class="btn btn-sm btn-outline-primary" type="button" data-bs-toggle="modal" data-bs-target="#editBudget{{ row.budget.id }}"><i class="bi bi-pencil-square me-1"></i>Edit</button><form class="d-inline" method="post" action="{% url 'budget_delete' row.budget.id %}" onsubmit="return confirm('Delete the {{ row.budget.category.name|escapejs }} budget?');">{% csrf_token %}<button class="btn btn-sm btn-outline-danger" type="submit"><i class="bi bi-trash me-1"></i>Delete</button></form></td>
+                <td>{{ row.budget.start_date }}</td><td>{{ row.budget.end_date }}</td>
                 <td>{{ current_currency_symbol }}{{ row.budget.amount_limit }}</td><td>{{ current_currency_symbol }}{{ row.spent }}</td>
                 <td class="budget-usage">
                     <div class="progress" role="progressbar" aria-label="{{ row.budget.category.name }} budget used" aria-valuenow="{{ row.percent }}" aria-valuemin="0" aria-valuemax="100">
@@ -43,9 +76,30 @@
                 <td class="{% if row.remaining < 0 %}text-danger{% endif %}">{{ current_currency_symbol }}{{ row.remaining }}</td>
                 <td>{% if row.status == 'over' %}<span class="badge text-bg-danger">Exceeded by {{ current_currency_symbol }}{{ row.over_amount }}</span>{% elif row.status == 'limit' %}<span class="badge text-bg-warning">Limit reached</span>{% elif row.status == 'warning' %}<span class="badge text-bg-warning">80% warning</span>{% else %}<span class="badge text-bg-success">Within limit</span>{% endif %}</td>
             </tr>
-            {% empty %}<tr><td colspan="8">No budgets set yet.</td></tr>{% endfor %}
+            {% empty %}<tr><td colspan="9">No budgets set yet.</td></tr>{% endfor %}
         </tbody>
     </table>
+    </div>
 </div>
+
+{% for row in budget_rows %}
+<div class="modal fade" id="editBudget{{ row.budget.id }}" tabindex="-1" aria-labelledby="editBudgetLabel{{ row.budget.id }}" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+        <div class="modal-content">
+            <form method="post" action="{% url 'budget_update' row.budget.id %}">
+                {% csrf_token %}
+                <div class="modal-header"><div><p class="page-subtitle mb-0">Budget management</p><h5 class="modal-title" id="editBudgetLabel{{ row.budget.id }}">Edit {{ row.budget.category.name }} budget</h5></div><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button></div>
+                <div class="modal-body"><div class="row g-3">
+                    <div class="col-md-6"><label class="form-label" for="budget_category_{{ row.budget.id }}">Expense category</label><select id="budget_category_{{ row.budget.id }}" class="form-select" name="category" required>{% for category in form.category.field.queryset %}<option value="{{ category.id }}" {% if category.id == row.budget.category_id %}selected{% endif %}>{{ category.name }}</option>{% endfor %}</select></div>
+                    <div class="col-md-6"><label class="form-label" for="budget_limit_{{ row.budget.id }}">Budget limit</label><input id="budget_limit_{{ row.budget.id }}" class="form-control" type="number" name="amount_limit" min="10000" max="2100000" step="0.01" value="{{ row.budget.amount_limit }}" required></div>
+                    <div class="col-md-6"><label class="form-label" for="budget_start_{{ row.budget.id }}">Start date</label><input id="budget_start_{{ row.budget.id }}" class="form-control" type="date" name="start_date" value="{{ row.budget.start_date|date:'Y-m-d' }}" required></div>
+                    <div class="col-md-6"><label class="form-label" for="budget_end_{{ row.budget.id }}">End date</label><input id="budget_end_{{ row.budget.id }}" class="form-control" type="date" name="end_date" value="{{ row.budget.end_date|date:'Y-m-d' }}" required></div>
+                </div></div>
+                <div class="modal-footer"><button class="btn btn-outline-secondary" type="button" data-bs-dismiss="modal">Cancel</button><button class="btn btn-primary" type="submit"><i class="bi bi-check2 me-1"></i>Save changes</button></div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endfor %}
 </section>
 {% endblock %}

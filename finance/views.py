@@ -8,7 +8,7 @@ from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import Sum
+from django.db.models import Count, Sum
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
@@ -166,14 +166,14 @@ def quick_transaction(request):
     tx_type = request.POST.get('tx_type')
     category_id = request.POST.get('category')
     amount = request.POST.get('amount')
-    currency = request.POST.get('currency')
-    date = request.POST.get('date')
+    currency = request.POST.get('currency', '').strip()
+    date_value = request.POST.get('date', '').strip()
     description = request.POST.get('description', '')
     payment_method = request.POST.get('payment_method', '')
 
     try:
         category = Category.objects.get(pk=category_id, user=request.user)
-    except Category.DoesNotExist:
+    except (Category.DoesNotExist, ValueError, TypeError):
         messages.error(request, 'Invalid category selected.')
         return redirect('dashboard')
 
@@ -190,12 +190,22 @@ def quick_transaction(request):
         messages.error(request, 'Transaction amount must be greater than zero.')
         return redirect('dashboard')
 
+    allowed_currencies = {code for code, _ in Income.CURRENCY_CHOICES}
+    if currency not in allowed_currencies:
+        messages.error(request, 'Select a valid currency.')
+        return redirect('dashboard')
+    try:
+        transaction_date = datetime.date.fromisoformat(date_value)
+    except ValueError:
+        messages.error(request, 'Enter a valid transaction date.')
+        return redirect('dashboard')
+
     if tx_type == 'income':
-        income = Income(user=request.user, category=category, amount=amount, currency=currency or 'USD', date=date or timezone.now().date(), description=description)
+        income = Income(user=request.user, category=category, amount=amount, currency=currency, date=transaction_date, description=description)
         income.save()
         messages.success(request, 'Income added.')
     elif tx_type == 'expense':
-        expense = Expense(user=request.user, category=category, amount=amount, currency=currency or 'USD', date=date or timezone.now().date(), description=description, payment_method=payment_method)
+        expense = Expense(user=request.user, category=category, amount=amount, currency=currency, date=transaction_date, description=description, payment_method=payment_method)
         expense.save()
         messages.success(request, 'Expense added.')
     else:
@@ -504,6 +514,9 @@ def dashboard(request):
             'budget_alerts': budget_alerts,
             'budget_summary': budget_summary,
             'categories': Category.objects.filter(user=request.user),
+            'quick_currency_choices': Income.CURRENCY_CHOICES,
+            'quick_transaction_date': today,
+            'quick_default_currency': request.user.reporting_currency if request.user.reporting_currency in {code for code, _ in Income.CURRENCY_CHOICES} else 'USD',
             'current_currency_symbol': current_currency_symbol,
             'chart_months': months_json,
             'chart_income': income_json,
@@ -837,8 +850,84 @@ def budgets(request):
         for budget in budgets
     ]
 
+    # The threshold report is intentionally independent from budget limits.
+    # It totals every expense in the selected reporting period per category.
+    today = timezone.localdate()
+    threshold_start_date = today.replace(day=1)
+    threshold_end_date = today
+    threshold = Decimal('10000')
+    threshold_value = request.GET.get('threshold', '').strip()
+    if threshold_value:
+        try:
+            threshold = Decimal(threshold_value)
+            if threshold < 0:
+                raise InvalidOperation
+        except InvalidOperation:
+            messages.error(request, 'Enter a valid non-negative spending threshold.')
+            threshold = Decimal('10000')
+
+    start_value = request.GET.get('threshold_start_date', '').strip()
+    end_value = request.GET.get('threshold_end_date', '').strip()
+    try:
+        if start_value:
+            threshold_start_date = datetime.date.fromisoformat(start_value)
+        if end_value:
+            threshold_end_date = datetime.date.fromisoformat(end_value)
+        if threshold_end_date < threshold_start_date:
+            raise ValueError
+    except ValueError:
+        messages.error(request, 'Choose a valid threshold reporting date range.')
+        threshold_start_date = today.replace(day=1)
+        threshold_end_date = today
+
+    expense_categories_over_threshold = (
+        Expense.objects.filter(
+            user=request.user,
+            date__gte=threshold_start_date,
+            date__lte=threshold_end_date,
+        )
+        .values('category__name', 'currency')
+        .annotate(total_spent=Sum('amount'), transaction_count=Count('id'))
+        .filter(total_spent__gt=threshold)
+        .order_by('-total_spent', 'category__name', 'currency')
+    )
+
     current_currency_symbol = _get_display_currency_symbol([], Income.objects.filter(user=request.user), Expense.objects.filter(user=request.user))
-    return render(request, 'finance/budgets.html', {'budget_rows': budget_rows, 'form': form, 'current_currency_symbol': current_currency_symbol})
+    return render(request, 'finance/budgets.html', {
+        'budget_rows': budget_rows,
+        'form': form,
+        'current_currency_symbol': current_currency_symbol,
+        'expense_threshold': threshold,
+        'expense_threshold_start_date': threshold_start_date,
+        'expense_threshold_end_date': threshold_end_date,
+        'expense_categories_over_threshold': expense_categories_over_threshold,
+    })
+
+
+@login_required
+def budget_update(request, pk):
+    """Edit a budget owned by the signed-in user."""
+    budget = get_object_or_404(Budget, pk=pk, user=request.user)
+    if request.method == 'POST':
+        form = BudgetForm(request.POST, instance=budget, user=request.user)
+        if form.is_valid():
+            form.save()
+            messages.success(request, 'Budget updated.')
+            return redirect('budgets')
+    else:
+        form = BudgetForm(instance=budget, user=request.user)
+    return render(request, 'finance/budget_form.html', {'form': form, 'budget': budget})
+
+
+@login_required
+def budget_delete(request, pk):
+    """Delete a budget owned by the signed-in user; deletion must be explicit."""
+    budget = get_object_or_404(Budget, pk=pk, user=request.user)
+    if request.method != 'POST':
+        return redirect('budgets')
+    budget.delete()
+    messages.success(request, 'Budget deleted.')
+    return redirect('budgets')
 
 
 @login_required

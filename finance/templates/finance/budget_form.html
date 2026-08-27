@@ -1,0 +1,26 @@
+{% extends 'finance/base.html' %}
+{% block title %}Edit Budget{% endblock %}
+{% block content %}
+<section class="row justify-content-center" aria-labelledby="edit-budget-title">
+    <div class="col-lg-8">
+        <div class="card shadow-sm p-4">
+            <p class="page-subtitle mb-1">Budget management</p>
+            <h1 id="edit-budget-title" class="page-title">Edit {{ budget.category.name }} budget</h1>
+            <p class="text-muted">Update the category, dates, or spending limit. Existing expenses are preserved.</p>
+            <form method="post" class="row g-3 mt-1">
+                {% csrf_token %}
+                {% for error in form.non_field_errors %}<div class="col-12 text-danger small">{{ error }}</div>{% endfor %}
+                {% for field in form %}
+                <div class="col-md-6">
+                    <label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
+                    {{ field }}
+                    {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+                    {% for error in field.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+                </div>
+                {% endfor %}
+                <div class="col-12 d-flex gap-2"><button class="btn btn-primary" type="submit"><i class="bi bi-check2 me-1"></i>Save changes</button><a class="btn btn-outline-secondary" href="{% url 'budgets' %}">Cancel</a></div>
+            </form>
+        </div>
+    </div>
+</section>
+{% endblock %}

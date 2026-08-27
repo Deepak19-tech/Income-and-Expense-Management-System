@@ -100,6 +100,24 @@ class FinanceCrudTests(TestCase):
         self.assertIn('budget_recommendations', response.context)
         self.assertIn('unusual_spending', response.context)
 
+    def test_quick_transaction_has_currency_date_defaults_and_validates_input(self):
+        income_category = Category.objects.create(user=self.user, name='Quick salary', type='income')
+        page = self.client.get(reverse('dashboard'))
+        self.assertContains(page, 'US Dollar')
+        self.assertContains(page, 'id="quick_date"')
+
+        invalid = self.client.post(reverse('quick_transaction'), {
+            'tx_type': 'income', 'category': income_category.id, 'amount': '100', 'currency': 'BAD', 'date': 'not-a-date',
+        }, follow=True)
+        self.assertContains(invalid, 'Select a valid currency.')
+        self.assertFalse(Income.objects.filter(user=self.user, category=income_category).exists())
+
+        response = self.client.post(reverse('quick_transaction'), {
+            'tx_type': 'income', 'category': income_category.id, 'amount': '100', 'currency': 'USD', 'date': '2026-08-27', 'description': 'Quick entry',
+        })
+        self.assertRedirects(response, reverse('dashboard'))
+        self.assertTrue(Income.objects.filter(user=self.user, category=income_category, description='Quick entry').exists())
+
     def test_dashboard_flags_unusual_spending_and_suggests_budget(self):
         expense_category = Category.objects.create(user=self.user, name='Food', type='expense')
         for date in ('2026-05-10', '2026-06-10', '2026-07-10'):
@@ -158,18 +176,65 @@ class FinanceCrudTests(TestCase):
 
     def test_saving_a_budget_for_the_same_period_updates_its_limit(self):
         expense_category = Category.objects.create(user=self.user, name='Rent', type='expense')
-        Budget.objects.create(user=self.user, category=expense_category, start_date='2026-08-01', end_date='2026-08-31', amount_limit='500.00')
+        Budget.objects.create(user=self.user, category=expense_category, start_date='2026-08-01', end_date='2026-08-31', amount_limit='12000.00')
 
         response = self.client.post(reverse('budgets'), {
             'category': expense_category.id,
             'start_date': '2026-08-01',
             'end_date': '2026-08-31',
-            'amount_limit': '650.00',
+            'amount_limit': '16000.00',
         })
 
         self.assertRedirects(response, reverse('budgets'))
         self.assertEqual(Budget.objects.filter(user=self.user, category=expense_category, start_date='2026-08-01', end_date='2026-08-31').count(), 1)
-        self.assertEqual(Budget.objects.get(user=self.user, category=expense_category, start_date='2026-08-01', end_date='2026-08-31').amount_limit, 650.00)
+        self.assertEqual(Budget.objects.get(user=self.user, category=expense_category, start_date='2026-08-01', end_date='2026-08-31').amount_limit, 16000.00)
+
+    def test_budget_can_be_viewed_edited_and_deleted(self):
+        expense_category = Category.objects.create(user=self.user, name='Household', type='expense')
+        budget = Budget.objects.create(user=self.user, category=expense_category, start_date='2026-08-01', end_date='2026-08-31', amount_limit='500.00')
+
+        page = self.client.get(reverse('budgets'))
+        self.assertContains(page, 'Household')
+        self.assertContains(page, f'editBudget{budget.id}')
+        self.assertContains(page, 'Edit')
+        self.assertContains(page, reverse('budget_delete', args=[budget.id]))
+
+        response = self.client.post(reverse('budget_update', args=[budget.id]), {
+            'category': expense_category.id, 'start_date': '2026-08-05', 'end_date': '2026-08-31', 'amount_limit': '16000.00',
+        })
+        self.assertRedirects(response, reverse('budgets'))
+        budget.refresh_from_db()
+        self.assertEqual(budget.start_date.isoformat(), '2026-08-05')
+        self.assertEqual(budget.amount_limit, 16000.00)
+
+        response = self.client.post(reverse('budget_delete', args=[budget.id]))
+        self.assertRedirects(response, reverse('budgets'))
+        self.assertFalse(Budget.objects.filter(pk=budget.id).exists())
+
+    def test_budget_limit_range_and_expense_threshold_listing(self):
+        food = Category.objects.create(user=self.user, name='Food', type='expense')
+        travel = Category.objects.create(user=self.user, name='Travel', type='expense')
+        Expense.objects.create(user=self.user, category=food, amount='8000.00', currency='NPR', date='2026-08-02')
+        Expense.objects.create(user=self.user, category=food, amount='3000.00', currency='NPR', date='2026-08-03')
+        Expense.objects.create(user=self.user, category=food, amount='6000.00', currency='NPR', date='2026-07-31')
+        Expense.objects.create(user=self.user, category=travel, amount='9000.00', currency='NPR', date='2026-08-04')
+
+        too_small = BudgetForm(data={'category': food.id, 'start_date': '2026-08-01', 'end_date': '2026-08-31', 'amount_limit': '9999.99'}, user=self.user)
+        too_large = BudgetForm(data={'category': food.id, 'start_date': '2026-08-01', 'end_date': '2026-08-31', 'amount_limit': '2100000.01'}, user=self.user)
+        self.assertIn('amount_limit', too_small.errors)
+        self.assertIn('amount_limit', too_large.errors)
+
+        response = self.client.get(reverse('budgets'), {
+            'threshold': '10000',
+            'threshold_start_date': '2026-08-01',
+            'threshold_end_date': '2026-08-31',
+        })
+        self.assertEqual(response.context['expense_threshold'], 10000)
+        self.assertEqual(response.context['expense_threshold_start_date'].isoformat(), '2026-08-01')
+        self.assertEqual(response.context['expense_threshold_end_date'].isoformat(), '2026-08-31')
+        self.assertEqual(list(response.context['expense_categories_over_threshold']), [{
+            'category__name': 'Food', 'currency': 'NPR', 'total_spent': 11000, 'transaction_count': 2,
+        }])
 
     def test_budget_statuses_distinguish_warning_limit_and_exceeded(self):
         expense_category = Category.objects.create(user=self.user, name='Transport', type='expense')
