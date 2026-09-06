@@ -12,7 +12,7 @@ from django.db.models import Count, Sum
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
-from .forms import AccountForm, BillReminderForm, BudgetForm, CategoryForm, ExchangeRateForm, ExpenseForm, GoalForm, IncomeForm, ProfileForm, RecurringTransactionForm, RegistrationForm, RestoreBackupForm, ShareForm, TagForm, TransferForm
+from .forms import AccountForm, BillReminderForm, BudgetForm, CategoryForm, ExchangeRateForm, ExpenseForm, GoalForm, IncomeForm, InterestCalculatorForm, ProfileForm, RecurringTransactionForm, RegistrationForm, RestoreBackupForm, ShareForm, TagForm, TransferForm
 from .models import Account, AccountTransfer, AuditLog, BillReminder, Budget, Category, ExchangeRate, Expense, ImportBatch, Income, Notification, RecurringTransaction, SavingsGoal, SharedAccess, TransactionTag, User
 from .validators import validate_com_email
 from io import BytesIO
@@ -937,8 +937,9 @@ def financial_tools(request):
         'account_form': AccountForm(user=request.user), 'transfer_form': TransferForm(user=request.user),
         'goal_form': GoalForm(user=request.user), 'recurring_form': RecurringTransactionForm(user=request.user),
         'reminder_form': BillReminderForm(user=request.user), 'tag_form': TagForm(user=request.user), 'share_form': ShareForm(),
-        'exchange_rate_form': ExchangeRateForm(), 'restore_form': RestoreBackupForm(),
+        'exchange_rate_form': ExchangeRateForm(), 'restore_form': RestoreBackupForm(), 'interest_form': InterestCalculatorForm(),
     }
+    interest_result = None
     if request.method == 'POST':
         action = request.POST.get('action')
         form_key = {'account':'account_form', 'transfer':'transfer_form', 'goal':'goal_form', 'recurring':'recurring_form', 'reminder':'reminder_form', 'tag':'tag_form', 'share':'share_form', 'exchange_rate':'exchange_rate_form'}.get(action)
@@ -960,6 +961,18 @@ def financial_tools(request):
                     item = form.save(commit=False); item.user = request.user; item.save()
                     messages.success(request, f'{action.title()} saved.')
                     return redirect('financial_tools')
+        elif action == 'interest':
+            form = InterestCalculatorForm(request.POST)
+            forms['interest_form'] = form
+            if form.is_valid():
+                principal = form.cleaned_data['principal']
+                rate = form.cleaned_data['annual_rate'] / Decimal('100')
+                years = form.cleaned_data['years']
+                compounds_per_year = int(form.cleaned_data['compounds_per_year'])
+                ending_balance = principal * (Decimal('1') + rate / compounds_per_year) ** (compounds_per_year * years)
+                ending_balance = ending_balance.quantize(Decimal('0.01'))
+                interest_earned = (ending_balance - principal).quantize(Decimal('0.01'))
+                interest_result = {'ending_balance': ending_balance, 'interest_earned': interest_earned}
         elif action == 'restore':
             form = RestoreBackupForm(request.POST, request.FILES)
             forms['restore_form'] = form
@@ -1019,7 +1032,7 @@ def financial_tools(request):
     goal_data = []
     for goal in SavingsGoal.objects.filter(user=request.user):
         goal_data.append((goal, min(100, int(goal.current_amount * 100 / goal.target_amount)) if goal.target_amount else 0))
-    return render(request, 'finance/financial_tools.html', {**forms, 'accounts':Account.objects.filter(user=request.user), 'transfers':AccountTransfer.objects.filter(user=request.user)[:5], 'goals':goal_data, 'recurring':RecurringTransaction.objects.filter(user=request.user), 'reminders':due_reminders, 'tags':TransactionTag.objects.filter(user=request.user), 'shares':SharedAccess.objects.filter(owner=request.user).select_related('member'), 'imports':ImportBatch.objects.filter(user=request.user)[:5], 'exchange_rates':ExchangeRate.objects.filter(user=request.user)[:8], 'audit_logs':AuditLog.objects.filter(user=request.user)[:8]})
+    return render(request, 'finance/financial_tools.html', {**forms, 'interest_result': interest_result, 'accounts':Account.objects.filter(user=request.user), 'transfers':AccountTransfer.objects.filter(user=request.user)[:5], 'goals':goal_data, 'recurring':RecurringTransaction.objects.filter(user=request.user), 'reminders':due_reminders, 'tags':TransactionTag.objects.filter(user=request.user), 'shares':SharedAccess.objects.filter(owner=request.user).select_related('member'), 'imports':ImportBatch.objects.filter(user=request.user)[:5], 'exchange_rates':ExchangeRate.objects.filter(user=request.user)[:8], 'audit_logs':AuditLog.objects.filter(user=request.user)[:8]})
 
 
 @login_required

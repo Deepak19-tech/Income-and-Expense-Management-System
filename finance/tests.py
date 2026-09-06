@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
@@ -279,6 +281,21 @@ class FinanceCrudTests(TestCase):
         self.assertEqual(ExchangeRate.objects.get(user=self.user).rate, 130)
         self.assertEqual(response.context['converted_current_income'], 1300)
         self.assertTrue(response.context['conversion_complete'])
+
+    def test_interest_calculator_compounds_and_validates_amount(self):
+        response = self.client.post(reverse('financial_tools'), {
+            'action': 'interest', 'principal': '1000', 'annual_rate': '12',
+            'years': '2', 'compounds_per_year': '12',
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['interest_result']['ending_balance'], Decimal('1269.73'))
+        self.assertEqual(response.context['interest_result']['interest_earned'], Decimal('269.73'))
+
+        invalid = self.client.post(reverse('financial_tools'), {
+            'action': 'interest', 'principal': '0', 'annual_rate': '12',
+            'years': '2', 'compounds_per_year': '12',
+        })
+        self.assertContains(invalid, 'Ensure this value is greater than or equal to 0.01.')
 
     def test_backup_can_be_restored_without_overwriting_existing_data(self):
         expense_category = Category.objects.create(user=self.user, name='Restored Food', type='expense')

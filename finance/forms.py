@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django import forms
 from django.contrib.auth.forms import UserCreationForm
 from django.core.validators import RegexValidator
@@ -388,6 +390,42 @@ class ExchangeRateForm(StyledFormMixin, forms.ModelForm):
         if cleaned.get('rate') is not None and cleaned['rate'] <= 0:
             self.add_error('rate', 'Exchange rate must be greater than zero.')
         return cleaned
+
+
+class InterestCalculatorForm(StyledFormMixin, forms.Form):
+    COMPOUNDING_CHOICES = (
+        ('1', 'Annually'),
+        ('2', 'Semi-annually'),
+        ('4', 'Quarterly'),
+        ('12', 'Monthly'),
+        ('365', 'Daily'),
+    )
+
+    principal = forms.DecimalField(
+        label='Starting amount',
+        min_value=Decimal('0.01'),
+        max_digits=14,
+        decimal_places=2,
+        widget=forms.NumberInput(attrs={'min': '0.01', 'step': '0.01'}),
+    )
+    annual_rate = forms.DecimalField(
+        label='Annual interest rate (%)',
+        min_value=Decimal('0'),
+        max_value=Decimal('100'),
+        max_digits=6,
+        decimal_places=3,
+        widget=forms.NumberInput(attrs={'min': '0', 'max': '100', 'step': '0.001'}),
+    )
+    years = forms.IntegerField(
+        label='Years',
+        min_value=1,
+        max_value=100,
+        widget=forms.NumberInput(attrs={'min': '1', 'max': '100', 'step': '1'}),
+    )
+    compounds_per_year = forms.ChoiceField(
+        label='Compounding frequency',
+        choices=COMPOUNDING_CHOICES,
+    )
 
 
 class RestoreBackupForm(StyledFormMixin, forms.Form):
