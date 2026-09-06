@@ -12,7 +12,7 @@ from django.db.models import Count, Sum
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
-from .forms import AccountForm, BillReminderForm, BudgetForm, CategoryForm, ExchangeRateForm, ExpenseForm, GoalForm, IncomeForm, InterestCalculatorForm, ProfileForm, RecurringTransactionForm, RegistrationForm, RestoreBackupForm, ShareForm, TagForm, TransferForm
+from .forms import AccountForm, BillReminderForm, BudgetForm, CategoryForm, ExchangeRateForm, ExpenseForm, GoalForm, IncomeForm, InterestCalculatorForm, OnboardingForm, ProfileForm, RecurringTransactionForm, RegistrationForm, RestoreBackupForm, ShareForm, TagForm, TransferForm
 from .models import Account, AccountTransfer, AuditLog, BillReminder, Budget, Category, ExchangeRate, Expense, ImportBatch, Income, Notification, RecurringTransaction, SavingsGoal, SharedAccess, TransactionTag, User
 from .validators import validate_com_email
 from io import BytesIO
@@ -223,7 +223,7 @@ def register_view(request):
             if user is not None:
                 login(request, user)
                 messages.success(request, 'Welcome! Your account has been created.')
-                return redirect('dashboard')
+                return redirect('welcome' if not user.onboarding_complete else 'dashboard')
     else:
         form = RegistrationForm()
     return render(request, 'finance/register.html', {'form': form})
@@ -244,9 +244,33 @@ def login_view(request):
         user = authenticate(request, username=username, password=password)
         if user is not None:
             login(request, user)
-            return redirect('dashboard')
+            return redirect('welcome' if not user.onboarding_complete else 'dashboard')
         messages.error(request, 'Invalid username or password.')
     return render(request, 'finance/login.html')
+
+
+@login_required
+def welcome(request):
+    if request.user.onboarding_complete:
+        return redirect('dashboard')
+    if request.method == 'POST':
+        form = OnboardingForm(request.POST, request.FILES, instance=request.user)
+        if form.is_valid():
+            user = form.save(commit=False)
+            user.onboarding_complete = True
+            user.save()
+            messages.success(request, 'Your workspace is ready. Welcome to HisabKitab!')
+            return redirect('dashboard')
+    else:
+        form = OnboardingForm(instance=request.user, initial={'full_name': request.user.full_name})
+    return render(request, 'finance/welcome.html', {'form': form})
+
+
+@login_required
+def skip_welcome(request):
+    if request.method == 'POST':
+        User.objects.filter(pk=request.user.pk).update(onboarding_complete=True)
+    return redirect('dashboard')
 
 
 @login_required
@@ -411,6 +435,8 @@ def _dashboard_insights(user, today, income_qs, expense_qs, budget_summary, all_
 
 @login_required
 def dashboard(request):
+    if not request.user.onboarding_complete:
+        return redirect('welcome')
     today = timezone.now().date()
     income_qs = Income.objects.filter(user=request.user)
     expense_qs = Expense.objects.filter(user=request.user)
@@ -456,7 +482,7 @@ def dashboard(request):
             conversion_complete = False
         else:
             converted_expense += converted
-    # Prepare chart data: last 6 months income/expense series and category breakdown
+    # Prepare actual and projected cash-flow series for the dashboard.
     def _get_last_n_months(n=6):
         labels = []
         today = timezone.now().date()
@@ -481,6 +507,18 @@ def dashboard(request):
         income_series.append(float(inc_total))
         expense_series.append(float(exp_total))
 
+    recent_income_average = sum(income_series[-3:]) / 3
+    recent_expense_average = sum(expense_series[-3:]) / 3
+    projected_months = []
+    for offset in range(1, 4):
+        projected_month = today.month + offset
+        projected_year = today.year + (projected_month - 1) // 12
+        projected_month = ((projected_month - 1) % 12) + 1
+        projected_months.append(f"{projected_year}-{projected_month:02d}")
+    forecast_income = [None] * len(income_series) + [round(recent_income_average, 2)] * 3
+    forecast_expense = [None] * len(expense_series) + [round(recent_expense_average, 2)] * 3
+    months += projected_months
+
     category_labels = [item['category__name'] for item in expense_breakdown]
     category_values = [float(item['total']) for item in expense_breakdown]
 
@@ -488,6 +526,8 @@ def dashboard(request):
     months_json = mark_safe(json.dumps(months))
     income_json = mark_safe(json.dumps(income_series))
     expense_json = mark_safe(json.dumps(expense_series))
+    forecast_income_json = mark_safe(json.dumps(forecast_income))
+    forecast_expense_json = mark_safe(json.dumps(forecast_expense))
     category_labels_json = mark_safe(json.dumps(category_labels))
     category_values_json = mark_safe(json.dumps(category_values))
     insights = _dashboard_insights(
@@ -521,6 +561,8 @@ def dashboard(request):
             'chart_months': months_json,
             'chart_income': income_json,
             'chart_expense': expense_json,
+            'chart_forecast_income': forecast_income_json,
+            'chart_forecast_expense': forecast_expense_json,
             'chart_cat_labels': category_labels_json,
             'chart_cat_values': category_values_json,
             **insights,
@@ -809,7 +851,7 @@ def export_transactions(request):
 @login_required
 def profile_view(request):
     if request.method == 'POST':
-        form = ProfileForm(request.POST, instance=request.user)
+        form = ProfileForm(request.POST, request.FILES, instance=request.user)
         if form.is_valid():
             user = form.save(commit=False)
             password = form.cleaned_data.get('password')

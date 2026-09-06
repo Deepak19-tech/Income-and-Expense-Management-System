@@ -10,6 +10,8 @@ class User(AbstractUser):
     email = models.EmailField(unique=True, validators=[validate_com_email])
     phone_number = models.CharField(max_length=16, unique=True, blank=True, null=True)
     reporting_currency = models.CharField(max_length=10, default='USD')
+    profile_picture = models.ImageField(upload_to='profile_pictures/', blank=True)
+    onboarding_complete = models.BooleanField(default=False)
 
     def __str__(self):
         return self.get_full_name() or self.username

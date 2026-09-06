@@ -207,7 +207,7 @@ class ProfileForm(StyledFormMixin, forms.ModelForm):
 
     class Meta:
         model = User
-        fields = ('full_name', 'email', 'phone_number', 'username', 'reporting_currency')
+        fields = ('full_name', 'email', 'phone_number', 'username', 'reporting_currency', 'profile_picture')
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -235,6 +235,19 @@ class ProfileForm(StyledFormMixin, forms.ModelForm):
         if User.objects.filter(phone_number=phone_number).exclude(pk=self.instance.pk).exists():
             raise forms.ValidationError('A user with this phone number already exists.')
         return phone_number
+
+
+class OnboardingForm(StyledFormMixin, forms.ModelForm):
+    class Meta:
+        model = User
+        fields = ('full_name', 'profile_picture')
+        widgets = {'profile_picture': forms.FileInput(attrs={'accept': 'image/*'})}
+
+    def clean_full_name(self):
+        full_name = self.cleaned_data['full_name'].strip()
+        if not full_name:
+            raise forms.ValidationError('Add a display name so your dashboard feels like yours.')
+        return full_name
 
 
 class AccountForm(StyledFormMixin, forms.ModelForm):

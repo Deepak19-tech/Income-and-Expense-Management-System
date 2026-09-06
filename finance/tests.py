@@ -28,8 +28,9 @@ class FinanceAuthTests(TestCase):
         response = self.client.post(
             reverse('login'),
             {'username': 'testuser', 'password': 'StrongPass123!'},
-            follow=True,
         )
+        self.assertRedirects(response, reverse('welcome'))
+        response = self.client.post(reverse('welcome'), {'full_name': 'Test User'})
         self.assertRedirects(response, reverse('dashboard'))
 
     def test_registration_requires_com_email_letter_leading_username_and_unique_phone(self):
@@ -59,6 +60,8 @@ class FinanceAuthTests(TestCase):
         user_model = get_user_model()
         user_model.objects.create_user(username='emailowner', email='owner@example.com', password='StrongPass123!')
         response = self.client.post(reverse('login'), {'username': 'OWNER@EXAMPLE.COM', 'password': 'StrongPass123!'})
+        self.assertRedirects(response, reverse('welcome'))
+        response = self.client.post(reverse('skip_welcome'))
         self.assertRedirects(response, reverse('dashboard'))
 
     def test_profile_rejects_another_users_email_phone_or_numeric_username(self):
@@ -82,6 +85,7 @@ class FinanceCrudTests(TestCase):
             email='owner@example.com',
             password='StrongPass123!',
             full_name='Owner',
+            onboarding_complete=True,
         )
         self.category = Category.objects.create(user=self.user, name='Salary', type='income')
         self.client.force_login(self.user)

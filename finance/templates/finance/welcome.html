@@ -1,0 +1,33 @@
+{% extends 'finance/base.html' %}
+{% load static %}
+{% block title %}Welcome to HisabKitab{% endblock %}
+{% block body_class %}welcome-page{% endblock %}
+{% block content %}
+<div class="welcome-shell">
+    <div class="welcome-topline"><span class="eyebrow"><i class="bi bi-stars"></i> Your workspace starts here</span><form method="post" action="{% url 'skip_welcome' %}">{% csrf_token %}<button class="welcome-skip" type="submit">Skip tour <i class="bi bi-arrow-up-right"></i></button></form></div>
+    <div class="welcome-grid">
+        <section class="welcome-hero">
+            <div class="welcome-orbit welcome-orbit-one"></div><div class="welcome-orbit welcome-orbit-two"></div>
+            <div class="welcome-mark"><i class="bi bi-sparkles"></i></div>
+            <p class="welcome-kicker">Welcome to HisabKitab</p>
+            <h1>Thanks for joining.<br><span>Let’s make money clearer.</span></h1>
+            <p class="welcome-lede">A calm, focused workspace to understand where your money is going and what it can do next.</p>
+            <div class="welcome-promise"><i class="bi bi-check2-circle"></i><span>Set up once. Make better decisions every day.</span></div>
+        </section>
+        <section class="welcome-panel">
+            <div class="welcome-panel-head"><span class="step-label">01 / 02</span><h2>Make it yours</h2><p>Add a display name and optional photo. You can change these anytime from Profile.</p></div>
+            <form method="post" enctype="multipart/form-data" class="welcome-form">
+                {% csrf_token %}
+                {% for field in form %}<div class="welcome-field"><label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}{% if field.help_text %}<small class="form-text">{{ field.help_text }}</small>{% endif %}{% for error in field.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}</div>{% endfor %}
+                <button class="btn btn-primary btn-lg w-100" type="submit">Get Started <i class="bi bi-arrow-right ms-1"></i></button>
+            </form>
+            <div class="welcome-note"><i class="bi bi-lock-fill"></i> Your data stays private to your account.</div>
+        </section>
+    </div>
+    <div class="welcome-features">
+        <article class="welcome-feature"><span class="feature-icon feature-income"><i class="bi bi-wallet2"></i></span><div><strong>See the full picture</strong><p>Income, expenses, and balance in one clear dashboard.</p></div></article>
+        <article class="welcome-feature"><span class="feature-icon feature-chart"><i class="bi bi-graph-up-arrow"></i></span><div><strong>Plan what’s next</strong><p>Use forecasts and budgets to stay ahead of surprises.</p></div></article>
+        <article class="welcome-feature"><span class="feature-icon feature-shield"><i class="bi bi-shield-check"></i></span><div><strong>Stay organized</strong><p>Categories, reminders, and reports keep every detail in place.</p></div></article>
+    </div>
+</div>
+{% endblock %}
