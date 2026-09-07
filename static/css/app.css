@@ -12,6 +12,26 @@ h1,h2,h3,h4,h5,.navbar-brand { font-family:"Manrope",sans-serif; letter-spacing:
 .card { border:1px solid var(--line); border-radius:18px; background:var(--surface); box-shadow:0 8px 25px rgba(26,43,73,.045)!important; }
 .card:hover { box-shadow:0 12px 32px rgba(26,43,73,.07)!important; }
 .page-header { margin-bottom:1.65rem; }
+.tools-page { max-width:1440px; margin:0 auto; }
+.tools-section { margin-top:2.5rem; }
+.tools-section:first-child { margin-top:0; }
+.tools-section-last { margin-bottom:1rem; }
+.tools-section-heading { margin-bottom:1.15rem; }
+.tools-section-heading .eyebrow { margin-bottom:.35rem; }
+.tools-section-heading h2 { margin:0; font-size:1.35rem; letter-spacing:-.025em; }
+.tools-section-heading p { margin:.3rem 0 0; color:var(--muted); font-size:.88rem; }
+.tools-card { padding:1.35rem!important; }
+.tools-card-icon { color:var(--primary); font-size:1.25rem; }
+.tools-divider { height:1px; margin:1.25rem 0; background:var(--line); }
+.tools-list { display:grid; gap:.15rem; }
+.tools-list-row { display:flex; align-items:center; justify-content:space-between; gap:1rem; min-height:42px; padding:.55rem 0; color:var(--ink); }
+.tools-list-row > span { min-width:0; }
+.tools-list-row > span:first-child { overflow-wrap:anywhere; }
+.tools-form-label { color:var(--primary); font-size:.82rem; font-weight:800; letter-spacing:.05em; text-transform:uppercase; }
+.tools-result { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:1rem; margin-top:1.4rem; padding:1rem; border:1px solid var(--line); border-radius:12px; background:var(--primary-soft); }
+.tools-result small { display:block; color:var(--muted); font-size:.75rem; font-weight:700; }
+.tools-result strong { display:block; margin-top:.25rem; font-family:"Manrope",sans-serif; font-size:1.35rem; }
+@media (max-width:575.98px) { .tools-section { margin-top:2rem; }.tools-card { padding:1rem!important; }.tools-section-heading h2 { font-size:1.2rem; }.tools-list-row { align-items:flex-start; flex-wrap:wrap; gap:.25rem .75rem; }.tools-result strong { font-size:1.1rem; } }
 .page-title { font-size:1.75rem; margin-bottom:.25rem; }
 .page-subtitle { color:var(--muted); margin:0; }
 .btn { border-radius:10px; font-weight:700; padding:.58rem 1rem; transition:transform .16s ease,box-shadow .16s ease; }

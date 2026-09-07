@@ -53,9 +53,9 @@ class BudgetAdmin(admin.ModelAdmin):
 
 @admin.register(Account)
 class AccountAdmin(admin.ModelAdmin):
-    list_display = ('name', 'user', 'type', 'opening_balance', 'currency', 'is_active')
+    list_display = ('name', 'account_number', 'user', 'type', 'opening_balance', 'currency', 'is_active')
     list_filter = ('type', 'currency', 'is_active')
-    search_fields = ('name', 'user__username')
+    search_fields = ('name', 'account_number', 'user__username')
     list_select_related = ('user',)
 
 

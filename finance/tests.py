@@ -1,12 +1,21 @@
+from datetime import date
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 from django.urls import reverse
+from django.utils import timezone
 
 from .forms import BudgetForm, ExpenseForm, IncomeForm, ProfileForm, RegistrationForm
-from .models import AuditLog, Budget, Category, ExchangeRate, Expense, Income, Notification
+from .models import Account, AuditLog, Budget, Category, ExchangeRate, Expense, Income, Notification
+
+
+def month_date(offset=0, day=1):
+    current_month = timezone.localdate().replace(day=1)
+    month_index = current_month.year * 12 + current_month.month - 1 + offset
+    year, month = divmod(month_index, 12)
+    return date(year, month + 1, day)
 
 
 class FinanceAuthTests(TestCase):
@@ -93,8 +102,8 @@ class FinanceCrudTests(TestCase):
     def test_dashboard_exposes_savings_and_budget_insights(self):
         income_category = Category.objects.create(user=self.user, name='Freelance', type='income')
         expense_category = Category.objects.create(user=self.user, name='Groceries', type='expense')
-        Income.objects.create(user=self.user, category=income_category, amount='1200.00', currency='USD', date='2026-08-01', description='Freelance payment')
-        Expense.objects.create(user=self.user, category=expense_category, amount='350.00', currency='USD', date='2026-08-02', description='Groceries')
+        Income.objects.create(user=self.user, category=income_category, amount='1200.00', currency='USD', date=month_date(day=1), description='Freelance payment')
+        Expense.objects.create(user=self.user, category=expense_category, amount='350.00', currency='USD', date=month_date(day=2), description='Groceries')
         Category.objects.create(user=self.user, name='Rent', type='expense')
 
         response = self.client.get(reverse('dashboard'))
@@ -126,9 +135,9 @@ class FinanceCrudTests(TestCase):
 
     def test_dashboard_flags_unusual_spending_and_suggests_budget(self):
         expense_category = Category.objects.create(user=self.user, name='Food', type='expense')
-        for date in ('2026-05-10', '2026-06-10', '2026-07-10'):
-            Expense.objects.create(user=self.user, category=expense_category, amount='100.00', currency='USD', date=date)
-        Expense.objects.create(user=self.user, category=expense_category, amount='200.00', currency='USD', date='2026-08-10')
+        for offset in (-3, -2, -1):
+            Expense.objects.create(user=self.user, category=expense_category, amount='100.00', currency='USD', date=month_date(offset, 10))
+        Expense.objects.create(user=self.user, category=expense_category, amount='200.00', currency='USD', date=month_date(day=10))
 
         response = self.client.get(reverse('dashboard'))
 
@@ -140,9 +149,9 @@ class FinanceCrudTests(TestCase):
 
     def test_budget_monitoring_uses_its_own_month_and_flags_overspending(self):
         expense_category = Category.objects.create(user=self.user, name='Food', type='expense')
-        Budget.objects.create(user=self.user, category=expense_category, start_date='2026-08-01', end_date='2026-08-31', amount_limit='100.00')
-        Expense.objects.create(user=self.user, category=expense_category, amount='125.00', currency='USD', date='2026-08-02')
-        Expense.objects.create(user=self.user, category=expense_category, amount='500.00', currency='USD', date='2026-07-02')
+        Budget.objects.create(user=self.user, category=expense_category, start_date=month_date(day=1), end_date=month_date(day=28), amount_limit='100.00')
+        Expense.objects.create(user=self.user, category=expense_category, amount='125.00', currency='USD', date=month_date(day=2))
+        Expense.objects.create(user=self.user, category=expense_category, amount='500.00', currency='USD', date=month_date(-1, 2))
 
         response = self.client.get(reverse('budgets'))
         row = response.context['budget_rows'][0]
@@ -256,8 +265,8 @@ class FinanceCrudTests(TestCase):
 
     def test_budget_warning_creates_a_persistent_notification(self):
         expense_category = Category.objects.create(user=self.user, name='Alerts', type='expense')
-        Budget.objects.create(user=self.user, category=expense_category, start_date='2026-08-01', end_date='2026-08-31', amount_limit='100.00')
-        Expense.objects.create(user=self.user, category=expense_category, amount='85.00', currency='USD', date='2026-08-05')
+        Budget.objects.create(user=self.user, category=expense_category, start_date=month_date(day=1), end_date=month_date(day=28), amount_limit='100.00')
+        Expense.objects.create(user=self.user, category=expense_category, amount='85.00', currency='USD', date=month_date(day=5))
 
         self.client.get(reverse('dashboard'))
 
@@ -271,11 +280,11 @@ class FinanceCrudTests(TestCase):
 
     def test_tools_save_exchange_rate_and_dashboard_converts_transaction(self):
         income_category = Category.objects.create(user=self.user, name='USD Salary', type='income')
-        Income.objects.create(user=self.user, category=income_category, amount='10.00', currency='USD', date='2026-08-01')
+        Income.objects.create(user=self.user, category=income_category, amount='10.00', currency='USD', date=month_date(day=1))
 
         response = self.client.post(reverse('financial_tools'), {
             'action': 'exchange_rate', 'base_currency': 'USD', 'quote_currency': 'NPR',
-            'rate': '130.000000', 'effective_date': '2026-08-01',
+            'rate': '130.000000', 'effective_date': month_date(day=1),
         })
 
         self.assertRedirects(response, reverse('financial_tools'))
@@ -300,6 +309,21 @@ class FinanceCrudTests(TestCase):
             'years': '2', 'compounds_per_year': '12',
         })
         self.assertContains(invalid, 'Ensure this value is greater than or equal to 0.01.')
+
+        negative = self.client.post(reverse('financial_tools'), {
+            'action': 'interest', 'principal': '-1', 'annual_rate': '12',
+            'years': '2', 'compounds_per_year': '12',
+        })
+        self.assertContains(negative, 'Ensure this value is greater than or equal to 0.01.')
+
+    def test_transfer_account_choices_show_account_numbers(self):
+        Account.objects.create(user=self.user, name='Cash', account_number='10001')
+        Account.objects.create(user=self.user, name='Bank', account_number='20002')
+
+        response = self.client.get(reverse('financial_tools'))
+
+        self.assertContains(response, 'Cash (10001)')
+        self.assertContains(response, 'Bank (20002)')
 
     def test_backup_can_be_restored_without_overwriting_existing_data(self):
         expense_category = Category.objects.create(user=self.user, name='Restored Food', type='expense')

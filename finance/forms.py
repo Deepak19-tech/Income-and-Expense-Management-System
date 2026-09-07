@@ -253,7 +253,7 @@ class OnboardingForm(StyledFormMixin, forms.ModelForm):
 class AccountForm(StyledFormMixin, forms.ModelForm):
     class Meta:
         model = Account
-        fields = ('name', 'type', 'opening_balance', 'currency')
+        fields = ('name', 'account_number', 'type', 'opening_balance', 'currency')
 
     def __init__(self, *args, user=None, **kwargs):
         self.user = user
@@ -276,8 +276,13 @@ class TransferForm(StyledFormMixin, forms.ModelForm):
         super().__init__(*args, **kwargs)
         if user:
             accounts = Account.objects.filter(user=user, is_active=True)
-            self.fields['from_account'].queryset = accounts
-            self.fields['to_account'].queryset = accounts
+            for field_name in ('from_account', 'to_account'):
+                self.fields[field_name].queryset = accounts
+                self.fields[field_name].label_from_instance = self.account_label
+
+    @staticmethod
+    def account_label(account):
+        return f'{account.name} ({account.account_number})' if account.account_number else account.name
     def clean(self):
         cleaned = super().clean()
         if cleaned.get('from_account') == cleaned.get('to_account'):

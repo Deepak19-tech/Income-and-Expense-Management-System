@@ -21,6 +21,7 @@ class Account(models.Model):
     ACCOUNT_TYPES = (('cash', 'Cash'), ('bank', 'Bank account'), ('wallet', 'Digital wallet'), ('card', 'Credit card'))
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='accounts')
     name = models.CharField(max_length=100)
+    account_number = models.CharField(max_length=34, blank=True)
     type = models.CharField(max_length=12, choices=ACCOUNT_TYPES, default='bank')
     opening_balance = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     currency = models.CharField(max_length=10, default='USD')
