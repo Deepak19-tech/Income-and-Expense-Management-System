@@ -8,7 +8,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from .forms import BudgetForm, ExpenseForm, IncomeForm, ProfileForm, RegistrationForm
-from .models import Account, AuditLog, Budget, Category, ExchangeRate, Expense, Income, Notification
+from .models import Account, AuditLog, Budget, Category, Expense, ExchangeRate, Income, Notification, TransactionTag
 
 
 def month_date(offset=0, day=1):
@@ -377,6 +377,49 @@ class FinanceCrudTests(TestCase):
 
         self.assertContains(response, 'Cash (10001)')
         self.assertContains(response, 'Bank (20002)')
+
+    def test_account_numbers_require_sixteen_digits_and_are_unique(self):
+        Account.objects.create(user=self.user, name='Existing', account_number='1234567890123456')
+
+        duplicate = self.client.post(reverse('financial_tools'), {
+            'action': 'account', 'name': 'Duplicate number', 'account_number': '1234567890123456',
+            'type': 'bank', 'opening_balance': '0', 'currency': 'USD',
+        })
+        self.assertEqual(duplicate.status_code, 200)
+        self.assertIn('This account number is already in use.', duplicate.context['account_form'].errors['account_number'])
+
+        for account_number in ('1234', '12345678901234567', '123456789012345x'):
+            invalid = self.client.post(reverse('financial_tools'), {
+                'action': 'account', 'name': f'Invalid {account_number}', 'account_number': account_number,
+                'type': 'bank', 'opening_balance': '0', 'currency': 'USD',
+            })
+            self.assertEqual(invalid.status_code, 200)
+            self.assertIn('Account number must contain exactly 16 digits.', invalid.context['account_form'].errors['account_number'])
+
+        valid = self.client.post(reverse('financial_tools'), {
+            'action': 'account', 'name': 'Valid account', 'account_number': '9876543210987654',
+            'type': 'bank', 'opening_balance': '0', 'currency': 'USD',
+        })
+        self.assertRedirects(valid, reverse('financial_tools'))
+
+    def test_income_and_expense_creation_persists_selected_tags(self):
+        income_tag = TransactionTag.objects.create(user=self.user, name='Recurring income')
+        expense_tag = TransactionTag.objects.create(user=self.user, name='Essential expense')
+        expense_category = Category.objects.create(user=self.user, name='Groceries tags', type='expense')
+
+        income_response = self.client.post(reverse('income_create'), {
+            'category': self.category.id, 'amount': '2500.00', 'date': '2026-08-01',
+            'description': 'Tagged salary', 'currency': 'USD', 'tags': [income_tag.id],
+        })
+        self.assertRedirects(income_response, reverse('income_list'))
+        self.assertEqual(list(Income.objects.get(description='Tagged salary').tags.all()), [income_tag])
+
+        expense_response = self.client.post(reverse('expense_create'), {
+            'category': expense_category.id, 'amount': '45.50', 'date': '2026-08-02',
+            'description': 'Tagged groceries', 'payment_method': 'Card', 'currency': 'USD', 'tags': [expense_tag.id],
+        })
+        self.assertRedirects(expense_response, reverse('expense_list'))
+        self.assertEqual(list(Expense.objects.get(description='Tagged groceries').tags.all()), [expense_tag])
 
     def test_backup_can_be_restored_without_overwriting_existing_data(self):
         expense_category = Category.objects.create(user=self.user, name='Restored Food', type='expense')

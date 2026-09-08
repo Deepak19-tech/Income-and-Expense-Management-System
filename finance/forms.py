@@ -251,6 +251,12 @@ class OnboardingForm(StyledFormMixin, forms.ModelForm):
 
 
 class AccountForm(StyledFormMixin, forms.ModelForm):
+    account_number = forms.CharField(
+        required=False,
+        max_length=16,
+        error_messages={'max_length': 'Account number must contain exactly 16 digits.'},
+    )
+
     class Meta:
         model = Account
         fields = ('name', 'account_number', 'type', 'opening_balance', 'currency')
@@ -259,12 +265,21 @@ class AccountForm(StyledFormMixin, forms.ModelForm):
         self.user = user
         super().__init__(*args, **kwargs)
         add_currency_choices(self.fields['currency'])
+        self.fields['account_number'].widget.attrs.update({'inputmode': 'numeric', 'maxlength': '16', 'minlength': '16', 'pattern': '[0-9]{16}'})
 
     def clean_name(self):
         name = self.cleaned_data['name']
         if self.user and Account.objects.filter(user=self.user, name__iexact=name).exclude(pk=self.instance.pk).exists():
             raise forms.ValidationError('You already have an account with this name.')
         return name
+
+    def clean_account_number(self):
+        account_number = self.cleaned_data['account_number'].strip()
+        if account_number and (len(account_number) != 16 or not account_number.isdigit()):
+            raise forms.ValidationError('Account number must contain exactly 16 digits.')
+        if account_number and Account.objects.filter(account_number=account_number).exclude(pk=self.instance.pk).exists():
+            raise forms.ValidationError('This account number is already in use.')
+        return account_number
 
 
 class TransferForm(StyledFormMixin, forms.ModelForm):

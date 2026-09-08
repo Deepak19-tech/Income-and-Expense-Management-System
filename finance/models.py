@@ -21,12 +21,20 @@ class Account(models.Model):
     ACCOUNT_TYPES = (('cash', 'Cash'), ('bank', 'Bank account'), ('wallet', 'Digital wallet'), ('card', 'Credit card'))
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='accounts')
     name = models.CharField(max_length=100)
-    account_number = models.CharField(max_length=34, blank=True)
+    account_number = models.CharField(max_length=16, blank=True, error_messages={'max_length': 'Account number must contain exactly 16 digits.'})
     type = models.CharField(max_length=12, choices=ACCOUNT_TYPES, default='bank')
     opening_balance = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     currency = models.CharField(max_length=10, default='USD')
     is_active = models.BooleanField(default=True)
-    class Meta: unique_together = ('user', 'name')
+    class Meta:
+        unique_together = ('user', 'name')
+        constraints = [
+            models.UniqueConstraint(
+                fields=('account_number',),
+                condition=~models.Q(account_number=''),
+                name='unique_nonempty_account_number',
+            ),
+        ]
     def __str__(self): return self.name
 
 

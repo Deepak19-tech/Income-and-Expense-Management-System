@@ -617,6 +617,7 @@ def income_create(request):
             income = form.save(commit=False)
             income.user = request.user
             income.save()
+            form.save_m2m()
             messages.success(request, 'Income added successfully.')
             return redirect('income_list')
     else:
@@ -670,6 +671,7 @@ def expense_create(request):
             expense = form.save(commit=False)
             expense.user = request.user
             expense.save()
+            form.save_m2m()
             messages.success(request, 'Expense added successfully.')
             return redirect('expense_list')
     else:
