@@ -12,7 +12,7 @@ from django.db.models import Count, Sum
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
-from .forms import AccountForm, BillReminderForm, BudgetForm, CategoryForm, ExchangeRateForm, ExpenseForm, GoalForm, IncomeForm, InterestCalculatorForm, OnboardingForm, ProfileForm, RecurringTransactionForm, RegistrationForm, RestoreBackupForm, ShareForm, TagForm, TransferForm
+from .forms import AccountForm, BillReminderForm, BudgetForm, CategoryForm, EMICalculatorForm, ExchangeRateForm, ExpenseForm, GoalForm, IncomeForm, InterestCalculatorForm, LoanCalculatorForm, OnboardingForm, ProfitLossForm, ProfileForm, RecurringTransactionForm, RegistrationForm, RestoreBackupForm, ShareForm, TagForm, TransferForm
 from .models import Account, AccountTransfer, AuditLog, BillReminder, Budget, Category, ExchangeRate, Expense, ImportBatch, Income, Notification, RecurringTransaction, SavingsGoal, SharedAccess, TransactionTag, User
 from .validators import validate_com_email
 from io import BytesIO
@@ -980,8 +980,12 @@ def financial_tools(request):
         'goal_form': GoalForm(user=request.user), 'recurring_form': RecurringTransactionForm(user=request.user),
         'reminder_form': BillReminderForm(user=request.user), 'tag_form': TagForm(user=request.user), 'share_form': ShareForm(),
         'exchange_rate_form': ExchangeRateForm(), 'restore_form': RestoreBackupForm(), 'interest_form': InterestCalculatorForm(),
+        'emi_form': EMICalculatorForm(), 'loan_form': LoanCalculatorForm(), 'profit_loss_form': ProfitLossForm(),
     }
     interest_result = None
+    emi_result = None
+    loan_result = None
+    profit_loss_result = None
     if request.method == 'POST':
         action = request.POST.get('action')
         form_key = {'account':'account_form', 'transfer':'transfer_form', 'goal':'goal_form', 'recurring':'recurring_form', 'reminder':'reminder_form', 'tag':'tag_form', 'share':'share_form', 'exchange_rate':'exchange_rate_form'}.get(action)
@@ -1015,6 +1019,49 @@ def financial_tools(request):
                 ending_balance = ending_balance.quantize(Decimal('0.01'))
                 interest_earned = (ending_balance - principal).quantize(Decimal('0.01'))
                 interest_result = {'ending_balance': ending_balance, 'interest_earned': interest_earned}
+        elif action == 'emi':
+            form = EMICalculatorForm(request.POST)
+            forms['emi_form'] = form
+            if form.is_valid():
+                principal = form.cleaned_data['principal']
+                monthly_rate = form.cleaned_data['annual_rate'] / Decimal('1200')
+                months = form.cleaned_data['term_months']
+                if monthly_rate:
+                    factor = (Decimal('1') + monthly_rate) ** months
+                    payment = principal * monthly_rate * factor / (factor - Decimal('1'))
+                else:
+                    payment = principal / months
+                payment = payment.quantize(Decimal('0.01'))
+                total_payment = (payment * months).quantize(Decimal('0.01'))
+                emi_result = {'monthly_payment': payment, 'total_payment': total_payment, 'total_interest': (total_payment - principal).quantize(Decimal('0.01'))}
+        elif action == 'loan':
+            form = LoanCalculatorForm(request.POST)
+            forms['loan_form'] = form
+            if form.is_valid():
+                loan_amount = form.cleaned_data['loan_amount']
+                financed_amount = loan_amount - (form.cleaned_data['down_payment'] or Decimal('0'))
+                monthly_rate = form.cleaned_data['annual_rate'] / Decimal('1200')
+                months = form.cleaned_data['term_years'] * 12
+                if monthly_rate:
+                    factor = (Decimal('1') + monthly_rate) ** months
+                    payment = financed_amount * monthly_rate * factor / (factor - Decimal('1'))
+                else:
+                    payment = financed_amount / months
+                payment = payment.quantize(Decimal('0.01'))
+                total_repayment = (payment * months).quantize(Decimal('0.01'))
+                fees = form.cleaned_data['fees'] or Decimal('0')
+                loan_result = {'financed_amount': financed_amount.quantize(Decimal('0.01')), 'monthly_payment': payment, 'total_repayment': total_repayment, 'total_interest': (total_repayment - financed_amount).quantize(Decimal('0.01')), 'cash_needed': ((loan_amount - financed_amount) + fees).quantize(Decimal('0.01'))}
+        elif action == 'profit_loss':
+            form = ProfitLossForm(request.POST)
+            forms['profit_loss_form'] = form
+            if form.is_valid():
+                start_date = form.cleaned_data['start_date']
+                end_date = form.cleaned_data['end_date']
+                currency = form.cleaned_data['currency']
+                income_total = Income.objects.filter(user=request.user, date__range=(start_date, end_date), currency=currency).aggregate(total=Sum('amount'))['total'] or Decimal('0')
+                expense_total = Expense.objects.filter(user=request.user, date__range=(start_date, end_date), currency=currency).aggregate(total=Sum('amount'))['total'] or Decimal('0')
+                net_result = income_total - expense_total
+                profit_loss_result = {'income': income_total, 'expenses': expense_total, 'net': net_result, 'label': 'Profit' if net_result >= 0 else 'Loss', 'currency': currency, 'start_date': start_date, 'end_date': end_date}
         elif action == 'restore':
             form = RestoreBackupForm(request.POST, request.FILES)
             forms['restore_form'] = form
@@ -1074,7 +1121,7 @@ def financial_tools(request):
     goal_data = []
     for goal in SavingsGoal.objects.filter(user=request.user):
         goal_data.append((goal, min(100, int(goal.current_amount * 100 / goal.target_amount)) if goal.target_amount else 0))
-    return render(request, 'finance/financial_tools.html', {**forms, 'interest_result': interest_result, 'accounts':Account.objects.filter(user=request.user), 'transfers':AccountTransfer.objects.filter(user=request.user)[:5], 'goals':goal_data, 'recurring':RecurringTransaction.objects.filter(user=request.user), 'reminders':due_reminders, 'tags':TransactionTag.objects.filter(user=request.user), 'shares':SharedAccess.objects.filter(owner=request.user).select_related('member'), 'imports':ImportBatch.objects.filter(user=request.user)[:5], 'exchange_rates':ExchangeRate.objects.filter(user=request.user)[:8], 'audit_logs':AuditLog.objects.filter(user=request.user)[:8]})
+    return render(request, 'finance/financial_tools.html', {**forms, 'interest_result': interest_result, 'emi_result': emi_result, 'loan_result': loan_result, 'profit_loss_result': profit_loss_result, 'accounts':Account.objects.filter(user=request.user), 'transfers':AccountTransfer.objects.filter(user=request.user)[:5], 'goals':goal_data, 'recurring':RecurringTransaction.objects.filter(user=request.user), 'reminders':due_reminders, 'tags':TransactionTag.objects.filter(user=request.user), 'shares':SharedAccess.objects.filter(owner=request.user).select_related('member'), 'imports':ImportBatch.objects.filter(user=request.user)[:5], 'exchange_rates':ExchangeRate.objects.filter(user=request.user)[:8], 'audit_logs':AuditLog.objects.filter(user=request.user)[:8]})
 
 
 @login_required

@@ -31,6 +31,10 @@ h1,h2,h3,h4,h5,.navbar-brand { font-family:"Manrope",sans-serif; letter-spacing:
 .tools-result { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:1rem; margin-top:1.4rem; padding:1rem; border:1px solid var(--line); border-radius:12px; background:var(--primary-soft); }
 .tools-result small { display:block; color:var(--muted); font-size:.75rem; font-weight:700; }
 .tools-result strong { display:block; margin-top:.25rem; font-family:"Manrope",sans-serif; font-size:1.35rem; }
+.tools-result-wide { grid-template-columns:repeat(3,minmax(0,1fr)); }
+.tools-calculators { padding:1.35rem; border:1px solid rgba(220,229,240,.8); border-radius:22px; background:linear-gradient(135deg,rgba(255,255,255,.72),rgba(238,246,255,.58)); }
+.tools-calculators .tools-section-heading { padding:0 .15rem; }
+html[data-theme="dark"] .tools-calculators { border-color:rgba(119,151,191,.2); background:linear-gradient(135deg,rgba(22,43,68,.62),rgba(13,29,48,.5)); }
 @media (max-width:575.98px) { .tools-section { margin-top:2rem; }.tools-card { padding:1rem!important; }.tools-section-heading h2 { font-size:1.2rem; }.tools-list-row { align-items:flex-start; flex-wrap:wrap; gap:.25rem .75rem; }.tools-result strong { font-size:1.1rem; } }
 .page-title { font-size:1.75rem; margin-bottom:.25rem; }
 .page-subtitle { color:var(--muted); margin:0; }

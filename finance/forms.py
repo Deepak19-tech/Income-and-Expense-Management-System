@@ -446,5 +446,39 @@ class InterestCalculatorForm(StyledFormMixin, forms.Form):
     )
 
 
+class EMICalculatorForm(StyledFormMixin, forms.Form):
+    principal = forms.DecimalField(label='Loan principal', min_value=Decimal('0.01'), max_digits=14, decimal_places=2, widget=forms.NumberInput(attrs={'min': '0.01', 'step': '0.01'}))
+    annual_rate = forms.DecimalField(label='Annual interest rate (%)', min_value=Decimal('0'), max_value=Decimal('100'), max_digits=6, decimal_places=3, widget=forms.NumberInput(attrs={'min': '0', 'max': '100', 'step': '0.001'}))
+    term_months = forms.IntegerField(label='Term (months)', min_value=1, max_value=600, widget=forms.NumberInput(attrs={'min': '1', 'max': '600', 'step': '1'}))
+
+
+class LoanCalculatorForm(StyledFormMixin, forms.Form):
+    loan_amount = forms.DecimalField(label='Purchase price / loan amount', min_value=Decimal('0.01'), max_digits=14, decimal_places=2, widget=forms.NumberInput(attrs={'min': '0.01', 'step': '0.01'}))
+    down_payment = forms.DecimalField(label='Down payment', min_value=Decimal('0'), max_digits=14, decimal_places=2, required=False, initial=0, widget=forms.NumberInput(attrs={'min': '0', 'step': '0.01'}))
+    annual_rate = forms.DecimalField(label='Annual interest rate (%)', min_value=Decimal('0'), max_value=Decimal('100'), max_digits=6, decimal_places=3, widget=forms.NumberInput(attrs={'min': '0', 'max': '100', 'step': '0.001'}))
+    term_years = forms.IntegerField(label='Term (years)', min_value=1, max_value=50, widget=forms.NumberInput(attrs={'min': '1', 'max': '50', 'step': '1'}))
+    fees = forms.DecimalField(label='One-time fees', min_value=Decimal('0'), max_digits=14, decimal_places=2, required=False, initial=0, widget=forms.NumberInput(attrs={'min': '0', 'step': '0.01'}))
+
+    def clean(self):
+        cleaned = super().clean()
+        down_payment = cleaned.get('down_payment') or Decimal('0')
+        loan_amount = cleaned.get('loan_amount') or Decimal('0')
+        if down_payment > loan_amount:
+            self.add_error('down_payment', 'Down payment cannot exceed the purchase price.')
+        return cleaned
+
+
+class ProfitLossForm(StyledFormMixin, forms.Form):
+    start_date = forms.DateField(label='From', widget=forms.DateInput(attrs={'type': 'date'}))
+    end_date = forms.DateField(label='To', widget=forms.DateInput(attrs={'type': 'date'}))
+    currency = forms.ChoiceField(label='Currency', choices=Income.CURRENCY_CHOICES)
+
+    def clean(self):
+        cleaned = super().clean()
+        if cleaned.get('start_date') and cleaned.get('end_date') and cleaned['start_date'] > cleaned['end_date']:
+            self.add_error('end_date', 'End date must be on or after the start date.')
+        return cleaned
+
+
 class RestoreBackupForm(StyledFormMixin, forms.Form):
     backup_file = forms.FileField(label='Backup JSON file')

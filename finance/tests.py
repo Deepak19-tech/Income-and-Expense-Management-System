@@ -316,6 +316,59 @@ class FinanceCrudTests(TestCase):
         })
         self.assertContains(negative, 'Ensure this value is greater than or equal to 0.01.')
 
+    def test_emi_calculator_returns_monthly_payment_and_interest(self):
+        response = self.client.post(reverse('financial_tools'), {
+            'action': 'emi', 'principal': '100000', 'annual_rate': '12', 'term_months': '12',
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['emi_result'], {
+            'monthly_payment': Decimal('8884.88'),
+            'total_payment': Decimal('106618.56'),
+            'total_interest': Decimal('6618.56'),
+        })
+
+    def test_loan_calculator_accounts_for_down_payment_and_fees(self):
+        response = self.client.post(reverse('financial_tools'), {
+            'action': 'loan', 'loan_amount': '300000', 'down_payment': '50000',
+            'annual_rate': '10', 'term_years': '5', 'fees': '2500',
+        })
+        self.assertEqual(response.status_code, 200)
+        result = response.context['loan_result']
+        self.assertEqual(result['financed_amount'], Decimal('250000.00'))
+        self.assertEqual(result['monthly_payment'], Decimal('5311.76'))
+        self.assertEqual(result['total_repayment'], Decimal('318705.60'))
+        self.assertEqual(result['total_interest'], Decimal('68705.60'))
+        self.assertEqual(result['cash_needed'], Decimal('52500.00'))
+
+        invalid = self.client.post(reverse('financial_tools'), {
+            'action': 'loan', 'loan_amount': '300000', 'down_payment': '300001',
+            'annual_rate': '10', 'term_years': '5', 'fees': '0',
+        })
+        self.assertIn('Down payment cannot exceed the purchase price.', invalid.context['loan_form'].errors['down_payment'])
+
+        no_down_payment = self.client.post(reverse('financial_tools'), {
+            'action': 'loan', 'loan_amount': '300000', 'annual_rate': '10', 'term_years': '5', 'fees': '',
+        })
+        self.assertEqual(no_down_payment.status_code, 200)
+        self.assertEqual(no_down_payment.context['loan_result']['financed_amount'], Decimal('300000.00'))
+
+    def test_profit_loss_calculator_filters_by_period_and_currency(self):
+        income_category = Category.objects.create(user=self.user, name='Consulting', type='income')
+        expense_category = Category.objects.create(user=self.user, name='Supplies', type='expense')
+        Income.objects.create(user=self.user, category=income_category, amount='2500', currency='USD', date='2026-08-10')
+        Income.objects.create(user=self.user, category=income_category, amount='1000', currency='EUR', date='2026-08-10')
+        Expense.objects.create(user=self.user, category=expense_category, amount='700', currency='USD', date='2026-08-12')
+        Expense.objects.create(user=self.user, category=expense_category, amount='100', currency='USD', date='2026-09-01')
+
+        response = self.client.post(reverse('financial_tools'), {
+            'action': 'profit_loss', 'start_date': '2026-08-01', 'end_date': '2026-08-31', 'currency': 'USD',
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['profit_loss_result']['income'], Decimal('2500'))
+        self.assertEqual(response.context['profit_loss_result']['expenses'], Decimal('700'))
+        self.assertEqual(response.context['profit_loss_result']['net'], Decimal('1800'))
+        self.assertEqual(response.context['profit_loss_result']['label'], 'Profit')
+
     def test_transfer_account_choices_show_account_numbers(self):
         Account.objects.create(user=self.user, name='Cash', account_number='10001')
         Account.objects.create(user=self.user, name='Bank', account_number='20002')
