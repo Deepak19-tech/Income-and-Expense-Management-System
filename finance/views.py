@@ -12,7 +12,7 @@ from django.db.models import Count, Sum
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
-from .forms import AccountForm, BillReminderForm, BudgetForm, CategoryForm, EMICalculatorForm, ExchangeRateForm, ExpenseForm, GoalForm, IncomeForm, InterestCalculatorForm, LoanCalculatorForm, OnboardingForm, ProfitLossForm, ProfileForm, RecurringTransactionForm, RegistrationForm, RestoreBackupForm, ShareForm, TagForm, TransferForm
+from .forms import AccountForm, BillReminderForm, BudgetForm, CategoryForm, EMICalculatorForm, EmergencyFundForm, ExchangeRateForm, ExpenseForm, ExpenseTrendForm, GoalForm, IncomeForm, InterestCalculatorForm, LoanCalculatorForm, OnboardingForm, ProfitLossForm, ProfileForm, RecurringTransactionForm, RegistrationForm, RestoreBackupForm, ShareForm, TagForm, TransferForm
 from .models import Account, AccountTransfer, AuditLog, BillReminder, Budget, Category, ExchangeRate, Expense, ImportBatch, Income, Notification, RecurringTransaction, SavingsGoal, SharedAccess, TransactionTag, User
 from .validators import validate_com_email
 from io import BytesIO
@@ -723,6 +723,8 @@ def reports(request):
     expense_total = expenses.aggregate(total=Sum('amount'))['total'] or Decimal('0')
     current_currency_symbol = _get_display_currency_symbol([], incomes, expenses)
     expense_prediction = _predict_next_month_expense(request.user)
+    monthly_rows = list(expenses.values('date').annotate(total=Sum('amount')).order_by('date'))
+    category_rows = list(expenses.values('category__name').annotate(total=Sum('amount')).order_by('-total'))
     return render(request, 'finance/reports.html', {
         'income_total': income_total,
         'expense_total': expense_total,
@@ -731,7 +733,29 @@ def reports(request):
         'expenses': expenses,
         'current_currency_symbol': current_currency_symbol,
         'expense_prediction': expense_prediction,
+        'report_net': income_total - expense_total,
+        'chart_months': json.dumps([row['date'].strftime('%b %Y') for row in monthly_rows]),
+        'chart_expenses': json.dumps([float(row['total']) for row in monthly_rows]),
+        'chart_category_labels': json.dumps([row['category__name'] for row in category_rows]),
+        'chart_category_values': json.dumps([float(row['total']) for row in category_rows]),
     })
+
+
+def _report_transactions(request):
+    incomes = Income.objects.filter(user=request.user).select_related('category')
+    expenses = Expense.objects.filter(user=request.user).select_related('category')
+    start_date = request.GET.get('start_date')
+    end_date = request.GET.get('end_date')
+    if start_date:
+        incomes = incomes.filter(date__gte=start_date)
+        expenses = expenses.filter(date__gte=start_date)
+    if end_date:
+        incomes = incomes.filter(date__lte=end_date)
+        expenses = expenses.filter(date__lte=end_date)
+    if request.GET.get('category'):
+        incomes = incomes.filter(category_id=request.GET['category'])
+        expenses = expenses.filter(category_id=request.GET['category'])
+    return incomes, expenses, start_date or 'All', end_date or timezone.localdate().isoformat()
 
 @login_required
 def export_transactions(request):
@@ -810,6 +834,17 @@ def export_transactions(request):
         ws.append(headers)
         for r in rows:
             ws.append(r)
+        from openpyxl.chart import BarChart, Reference
+        summary = wb.create_sheet('Summary')
+        summary.append(['Metric', 'Amount'])
+        summary.append(['Total income', float(incomes.aggregate(total=Sum('amount'))['total'] or 0)])
+        summary.append(['Total expenses', float(expenses.aggregate(total=Sum('amount'))['total'] or 0)])
+        summary.append(['Net savings', summary['B2'].value - summary['B3'].value])
+        summary_chart = BarChart()
+        summary_chart.title = 'Income vs expenses'
+        summary_chart.add_data(Reference(summary, min_col=2, min_row=1, max_row=3), titles_from_data=True)
+        summary_chart.set_categories(Reference(summary, min_col=1, min_row=2, max_row=3))
+        summary.add_chart(summary_chart, 'D2')
         bio = BytesIO()
         wb.save(bio)
         bio.seek(0)
@@ -824,6 +859,9 @@ def export_transactions(request):
             from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
             from reportlab.lib import colors
             from reportlab.lib.styles import getSampleStyleSheet
+            from reportlab.graphics.shapes import Drawing
+            from reportlab.graphics.charts.barcharts import VerticalBarChart
+            from reportlab.graphics.charts.piecharts import Pie
         except Exception:
             return HttpResponse('reportlab is required for PDF export. Install with pip install reportlab', status=500)
         bio = BytesIO()
@@ -834,6 +872,32 @@ def export_transactions(request):
         elems.append(title)
         elems.append(Paragraph(f'Period: {start.isoformat() if start else "All"} to {end.isoformat()}', styles['Normal']))
         elems.append(Spacer(1, 12))
+        income_total = incomes.aggregate(total=Sum('amount'))['total'] or Decimal('0')
+        expense_total = expenses.aggregate(total=Sum('amount'))['total'] or Decimal('0')
+        elems.append(Paragraph(f'Total income: {income_total} &nbsp;&nbsp; Total expenses: {expense_total} &nbsp;&nbsp; Net savings: {income_total - expense_total}', styles['Heading3']))
+        chart = Drawing(440, 180)
+        bars = VerticalBarChart()
+        bars.x = 60; bars.y = 35; bars.height = 120; bars.width = 340
+        bars.data = [[float(income_total), float(expense_total)]]
+        bars.categoryAxis.categoryNames = ['Income', 'Expenses']
+        bars.valueAxis.valueMin = 0
+        bars.valueAxis.valueMax = max(float(income_total), float(expense_total), 1) * 1.2
+        bars.valueAxis.valueStep = max(float(income_total), float(expense_total), 1) / 4
+        bars.categoryAxis.labels.fontSize = 8
+        bars.bars[0].fillColor = colors.HexColor('#1455c9')
+        chart.add(bars)
+        elems.append(Paragraph('Income vs expenses', styles['Heading3']))
+        elems.append(chart)
+        category_rows = list(expenses.values('category__name').annotate(total=Sum('amount')).order_by('-total'))
+        if category_rows:
+            pie = Drawing(440, 180)
+            pie_chart = Pie(); pie_chart.x = 150; pie_chart.y = 10; pie_chart.width = 150; pie_chart.height = 150
+            pie_chart.data = [float(row['total']) for row in category_rows]
+            pie_chart.labels = [row['category__name'] for row in category_rows]
+            pie_chart.slices.strokeWidth = 0
+            pie.add(pie_chart)
+            elems.append(Paragraph('Expense by category', styles['Heading3']))
+            elems.append(pie)
         data = [['Type', 'Date', 'Category', 'Amount', 'Currency', 'Description', 'Payment Method']] + rows
         table = Table(data, repeatRows=1)
         table.setStyle(TableStyle([
@@ -848,6 +912,13 @@ def export_transactions(request):
         resp = HttpResponse(bio.read(), content_type='application/pdf')
         resp['Content-Disposition'] = f'attachment; filename="{filename}"'
         return resp
+
+
+@login_required
+def transaction_slip(request, kind, pk):
+    model = Income if kind == 'income' else Expense
+    transaction_item = get_object_or_404(model.objects.select_related('category'), pk=pk, user=request.user)
+    return render(request, 'finance/transaction_slip.html', {'transaction': transaction_item, 'kind': kind.title()})
 
 
 @login_required
@@ -982,12 +1053,14 @@ def financial_tools(request):
         'goal_form': GoalForm(user=request.user), 'recurring_form': RecurringTransactionForm(user=request.user),
         'reminder_form': BillReminderForm(user=request.user), 'tag_form': TagForm(user=request.user), 'share_form': ShareForm(),
         'exchange_rate_form': ExchangeRateForm(), 'restore_form': RestoreBackupForm(), 'interest_form': InterestCalculatorForm(),
-        'emi_form': EMICalculatorForm(), 'loan_form': LoanCalculatorForm(), 'profit_loss_form': ProfitLossForm(),
+        'emi_form': EMICalculatorForm(), 'loan_form': LoanCalculatorForm(), 'profit_loss_form': ProfitLossForm(), 'emergency_fund_form': EmergencyFundForm(), 'expense_trend_form': ExpenseTrendForm(),
     }
     interest_result = None
     emi_result = None
     loan_result = None
     profit_loss_result = None
+    emergency_fund_result = None
+    expense_trend_result = None
     if request.method == 'POST':
         action = request.POST.get('action')
         form_key = {'account':'account_form', 'transfer':'transfer_form', 'goal':'goal_form', 'recurring':'recurring_form', 'reminder':'reminder_form', 'tag':'tag_form', 'share':'share_form', 'exchange_rate':'exchange_rate_form'}.get(action)
@@ -1064,6 +1137,23 @@ def financial_tools(request):
                 expense_total = Expense.objects.filter(user=request.user, date__range=(start_date, end_date), currency=currency).aggregate(total=Sum('amount'))['total'] or Decimal('0')
                 net_result = income_total - expense_total
                 profit_loss_result = {'income': income_total, 'expenses': expense_total, 'net': net_result, 'label': 'Profit' if net_result >= 0 else 'Loss', 'currency': currency, 'start_date': start_date, 'end_date': end_date}
+        elif action == 'emergency_fund':
+            form = EmergencyFundForm(request.POST)
+            forms['emergency_fund_form'] = form
+            if form.is_valid():
+                monthly = form.cleaned_data['monthly_expenses']
+                target = monthly * form.cleaned_data['months_of_cover']
+                current = form.cleaned_data['current_savings'] or Decimal('0')
+                emergency_fund_result = {'target': target, 'current': current, 'remaining': max(target - current, Decimal('0')), 'progress': min(100, int(current * 100 / target)) if target else 0}
+        elif action == 'expense_trend':
+            form = ExpenseTrendForm(request.POST)
+            forms['expense_trend_form'] = form
+            if form.is_valid():
+                months = form.cleaned_data['months']
+                rows = list(Expense.objects.filter(user=request.user).values('date').annotate(total=Sum('amount')).order_by('-date'))
+                rows = rows[:months]
+                rows.reverse()
+                expense_trend_result = {'labels': json.dumps([row['date'].strftime('%b %Y') for row in rows]), 'values': json.dumps([float(row['total']) for row in rows]), 'average': (sum((row['total'] for row in rows), Decimal('0')) / len(rows)).quantize(Decimal('0.01')) if rows else Decimal('0')}
         elif action == 'restore':
             form = RestoreBackupForm(request.POST, request.FILES)
             forms['restore_form'] = form
@@ -1123,7 +1213,7 @@ def financial_tools(request):
     goal_data = []
     for goal in SavingsGoal.objects.filter(user=request.user):
         goal_data.append((goal, min(100, int(goal.current_amount * 100 / goal.target_amount)) if goal.target_amount else 0))
-    return render(request, 'finance/financial_tools.html', {**forms, 'interest_result': interest_result, 'emi_result': emi_result, 'loan_result': loan_result, 'profit_loss_result': profit_loss_result, 'accounts':Account.objects.filter(user=request.user), 'transfers':AccountTransfer.objects.filter(user=request.user)[:5], 'goals':goal_data, 'recurring':RecurringTransaction.objects.filter(user=request.user), 'reminders':due_reminders, 'tags':TransactionTag.objects.filter(user=request.user), 'shares':SharedAccess.objects.filter(owner=request.user).select_related('member'), 'imports':ImportBatch.objects.filter(user=request.user)[:5], 'exchange_rates':ExchangeRate.objects.filter(user=request.user)[:8], 'audit_logs':AuditLog.objects.filter(user=request.user)[:8]})
+    return render(request, 'finance/financial_tools.html', {**forms, 'interest_result': interest_result, 'emi_result': emi_result, 'loan_result': loan_result, 'profit_loss_result': profit_loss_result, 'emergency_fund_result': emergency_fund_result, 'expense_trend_result': expense_trend_result, 'accounts':Account.objects.filter(user=request.user), 'transfers':AccountTransfer.objects.filter(user=request.user)[:5], 'goals':goal_data, 'recurring':RecurringTransaction.objects.filter(user=request.user), 'reminders':due_reminders, 'tags':TransactionTag.objects.filter(user=request.user), 'shares':SharedAccess.objects.filter(owner=request.user).select_related('member'), 'imports':ImportBatch.objects.filter(user=request.user)[:5], 'exchange_rates':ExchangeRate.objects.filter(user=request.user)[:8], 'audit_logs':AuditLog.objects.filter(user=request.user)[:8]})
 
 
 @login_required

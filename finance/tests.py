@@ -115,6 +115,27 @@ class FinanceCrudTests(TestCase):
         self.assertIn('budget_recommendations', response.context)
         self.assertIn('unusual_spending', response.context)
 
+    def test_reports_expose_chart_data_and_transaction_invoice(self):
+        expense_category = Category.objects.create(user=self.user, name='Groceries', type='expense')
+        income = Income.objects.create(user=self.user, category=self.category, amount='1200.00', currency='USD', date=month_date(day=1), description='Salary')
+        Expense.objects.create(user=self.user, category=expense_category, amount='350.00', currency='USD', date=month_date(day=2), description='Food')
+
+        response = self.client.get(reverse('reports'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['report_net'], 850)
+        self.assertContains(response, 'reportTrendChart')
+        self.assertContains(response, reverse('invoice', args=['income', income.pk]))
+
+    def test_financial_tools_calculate_emergency_fund(self):
+        response = self.client.post(reverse('financial_tools'), {
+            'action': 'emergency_fund', 'monthly_expenses': '1000', 'months_of_cover': '6', 'current_savings': '1500',
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['emergency_fund_result']['target'], Decimal('6000'))
+        self.assertEqual(response.context['emergency_fund_result']['remaining'], Decimal('4500'))
+
     def test_quick_transaction_has_currency_date_defaults_and_validates_input(self):
         income_category = Category.objects.create(user=self.user, name='Quick salary', type='income')
         page = self.client.get(reverse('dashboard'))
@@ -370,13 +391,21 @@ class FinanceCrudTests(TestCase):
         self.assertEqual(response.context['profit_loss_result']['label'], 'Profit')
 
     def test_transfer_account_choices_show_account_numbers(self):
-        Account.objects.create(user=self.user, name='Cash', account_number='10001')
-        Account.objects.create(user=self.user, name='Bank', account_number='20002')
+        Account.objects.create(user=self.user, name='Cash', account_number='1000000000000001')
+        Account.objects.create(user=self.user, name='Bank', account_number='2000000000000002')
 
         response = self.client.get(reverse('financial_tools'))
 
-        self.assertContains(response, 'Cash (10001)')
-        self.assertContains(response, 'Bank (20002)')
+        self.assertContains(response, 'Cash (1000000000000001)')
+        self.assertContains(response, 'Bank (2000000000000002)')
+
+    def test_account_number_is_required(self):
+        response = self.client.post(reverse('financial_tools'), {
+            'action': 'account', 'name': 'Missing number', 'account_number': '',
+            'type': 'bank', 'opening_balance': '0', 'currency': 'USD',
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('Account number is required.', response.context['account_form'].errors['account_number'])
 
     def test_account_numbers_require_sixteen_digits_and_are_unique(self):
         Account.objects.create(user=self.user, name='Existing', account_number='1234567890123456')
@@ -443,8 +472,8 @@ class FinanceCrudTests(TestCase):
         member = get_user_model().objects.create_user(username='member', email='member@example.com', password='StrongPass123!')
 
         for data in (
-            {'action': 'account', 'name': 'Cash', 'type': 'cash', 'opening_balance': '10', 'currency': 'USD'},
-            {'action': 'account', 'name': 'Bank', 'type': 'bank', 'opening_balance': '20', 'currency': 'USD'},
+            {'action': 'account', 'name': 'Cash', 'account_number': '3000000000000003', 'type': 'cash', 'opening_balance': '10', 'currency': 'USD'},
+            {'action': 'account', 'name': 'Bank', 'account_number': '4000000000000004', 'type': 'bank', 'opening_balance': '20', 'currency': 'USD'},
             {'action': 'goal', 'name': 'Laptop', 'target_amount': '1000', 'current_amount': '100', 'target_date': '2026-12-01', 'color': '#1455c9'},
             {'action': 'reminder', 'title': 'Internet', 'amount': '20', 'due_date': '2026-08-30', 'remind_days_before': '3'},
             {'action': 'tag', 'name': 'Essential', 'color': '#1455c9'},

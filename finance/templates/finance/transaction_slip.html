@@ -1,0 +1,10 @@
+{% extends 'finance/base.html' %}
+{% block title %}{{ kind }} Slip{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4 no-print"><a href="{% url 'reports' %}" class="btn btn-light"><i class="bi bi-arrow-left me-1"></i>Back to reports</a><button class="btn btn-primary" onclick="window.print()"><i class="bi bi-printer me-1"></i>Print / Save PDF</button></div>
+<div class="card p-5 mx-auto" style="max-width:760px" id="slip">
+  <div class="d-flex justify-content-between border-bottom pb-3 mb-4"><div><span class="eyebrow">HisabKitab</span><h1 class="page-title mb-1">{{ kind }} transaction slip</h1><p class="text-muted mb-0">Generated {{ transaction.date }}</p></div><i class="bi bi-receipt-cutoff display-5 text-primary"></i></div>
+  <div class="row g-3"><div class="col-6"><small class="text-muted d-block">Category</small><strong>{{ transaction.category.name }}</strong></div><div class="col-6"><small class="text-muted d-block">Date</small><strong>{{ transaction.date }}</strong></div><div class="col-6"><small class="text-muted d-block">Amount</small><strong class="fs-3">{{ transaction.currency_symbol }}{{ transaction.amount }}</strong></div><div class="col-6"><small class="text-muted d-block">{% if kind == 'Expense' %}Payment method{% else %}Currency{% endif %}</small><strong>{% if kind == 'Expense' %}{{ transaction.get_payment_method_display|default:'Not specified' }}{% else %}{{ transaction.currency }}{% endif %}</strong></div><div class="col-12 border-top pt-3"><small class="text-muted d-block">Description</small><p class="mb-0">{{ transaction.description|default:'No description provided.' }}</p></div></div>
+</div>
+<style>@media print {.no-print, .site-nav, .tour-backdrop, .tour-card {display:none !important;} .app-content {max-width:none;} .card {box-shadow:none !important; border:0 !important;}}</style>
+{% endblock %}

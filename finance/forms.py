@@ -252,9 +252,14 @@ class OnboardingForm(StyledFormMixin, forms.ModelForm):
 
 class AccountForm(StyledFormMixin, forms.ModelForm):
     account_number = forms.CharField(
-        required=False,
+        required=True,
         max_length=16,
-        error_messages={'max_length': 'Account number must contain exactly 16 digits.'},
+        min_length=16,
+        error_messages={
+            'required': 'Account number is required.',
+            'min_length': 'Account number must contain exactly 16 digits.',
+            'max_length': 'Account number must contain exactly 16 digits.',
+        },
     )
 
     class Meta:
@@ -275,9 +280,9 @@ class AccountForm(StyledFormMixin, forms.ModelForm):
 
     def clean_account_number(self):
         account_number = self.cleaned_data['account_number'].strip()
-        if account_number and (len(account_number) != 16 or not account_number.isdigit()):
+        if len(account_number) != 16 or not account_number.isdigit():
             raise forms.ValidationError('Account number must contain exactly 16 digits.')
-        if account_number and Account.objects.filter(account_number=account_number).exclude(pk=self.instance.pk).exists():
+        if Account.objects.filter(account_number=account_number).exclude(pk=self.instance.pk).exists():
             raise forms.ValidationError('This account number is already in use.')
         return account_number
 
@@ -289,15 +294,17 @@ class TransferForm(StyledFormMixin, forms.ModelForm):
         widgets = {'date': forms.DateInput(attrs={'type': 'date'})}
     def __init__(self, *args, user=None, **kwargs):
         super().__init__(*args, **kwargs)
+        self.fields['from_account'].help_text = 'Select an account with a valid 16-digit account number.'
+        self.fields['to_account'].help_text = 'Select an account with a valid 16-digit account number.'
         if user:
-            accounts = Account.objects.filter(user=user, is_active=True)
+            accounts = Account.objects.filter(user=user, is_active=True, account_number__regex=r'^\d{16}$')
             for field_name in ('from_account', 'to_account'):
                 self.fields[field_name].queryset = accounts
                 self.fields[field_name].label_from_instance = self.account_label
 
     @staticmethod
     def account_label(account):
-        return f'{account.name} ({account.account_number})' if account.account_number else account.name
+        return f'{account.name} ({account.account_number})'
     def clean(self):
         cleaned = super().clean()
         if cleaned.get('from_account') == cleaned.get('to_account'):
@@ -493,6 +500,16 @@ class ProfitLossForm(StyledFormMixin, forms.Form):
         if cleaned.get('start_date') and cleaned.get('end_date') and cleaned['start_date'] > cleaned['end_date']:
             self.add_error('end_date', 'End date must be on or after the start date.')
         return cleaned
+
+
+class EmergencyFundForm(StyledFormMixin, forms.Form):
+    monthly_expenses = forms.DecimalField(min_value=0, max_digits=10, decimal_places=2, label='Monthly essential expenses')
+    months_of_cover = forms.IntegerField(min_value=1, max_value=36, initial=6, label='Months of cover')
+    current_savings = forms.DecimalField(min_value=0, max_digits=10, decimal_places=2, required=False, initial=0, label='Current emergency savings')
+
+
+class ExpenseTrendForm(StyledFormMixin, forms.Form):
+    months = forms.IntegerField(min_value=3, max_value=24, initial=6, label='Months to analyze')
 
 
 class RestoreBackupForm(StyledFormMixin, forms.Form):

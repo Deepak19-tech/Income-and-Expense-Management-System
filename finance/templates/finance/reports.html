@@ -1,7 +1,8 @@
 {% extends 'finance/base.html' %}
 {% block title %}Reports{% endblock %}
+{% block extra_head %}<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>{% endblock %}
 {% block content %}
-<h2 class="mb-4">Reports</h2>
+<div class="page-header d-flex justify-content-between align-items-start gap-3"><div><span class="eyebrow"><i class="bi bi-bar-chart-line"></i> Charting & analytics</span><h1 class="page-title">Reports</h1><p class="page-subtitle">Understand the movement behind your balance.</p></div><button class="btn btn-outline-primary" type="button" onclick="window.print()"><i class="bi bi-printer me-1"></i>Print report</button></div>
 <form method="get" class="row g-2 mb-3">
     <div class="col-md-3">
         <label class="visually-hidden" for="reports_start_date">Start Date</label>
@@ -21,7 +22,8 @@
     </div>
     <div class="col-md-12"><button class="btn btn-primary" type="submit">Apply Filters</button></div>
 </form>
-<form method="get" action="{% url 'export_transactions' %}" class="row g-2 mb-3">
+<form method="get" action="{% url 'export_transactions' %}" class="row g-2 mb-3 no-print">
+    <input type="hidden" name="start_date" value="{{ request.GET.start_date }}"><input type="hidden" name="end_date" value="{{ request.GET.end_date }}">
     <div class="col-md-3">
         <label class="visually-hidden" for="exp_period">Period</label>
         <select id="exp_period" name="period" class="form-select">
@@ -46,11 +48,16 @@
             <option value="pdf">PDF</option>
         </select>
     </div>
-    <div class="col-md-3"><button class="btn btn-outline-primary w-100" type="submit">Download Report</button></div>
+    <div class="col-md-3"><button class="btn btn-outline-primary w-100" type="submit"><i class="bi bi-download me-1"></i>Download report</button></div>
 </form>
 <div class="row g-4">
     <div class="col-md-6"><div class="card shadow-sm p-4"><h5>Total Income</h5><h3 class="text-success">{{ current_currency_symbol }}{{ income_total }}</h3></div></div>
     <div class="col-md-6"><div class="card shadow-sm p-4"><h5>Total Expense</h5><h3 class="text-danger">{{ current_currency_symbol }}{{ expense_total }}</h3></div></div>
+    <div class="col-md-6"><div class="card shadow-sm p-4"><h5>Net savings</h5><h3 class="{% if report_net >= 0 %}text-success{% else %}text-danger{% endif %}">{{ current_currency_symbol }}{{ report_net }}</h3></div></div>
+</div>
+<div class="row g-4 mt-1">
+    <div class="col-lg-7"><div class="card p-4"><h5>Expense trend</h5><div class="chart-wrap"><canvas id="reportTrendChart"></canvas></div></div></div>
+    <div class="col-lg-5"><div class="card p-4"><h5>Expense by category</h5><div class="chart-wrap"><canvas id="reportCategoryChart"></canvas></div></div></div>
 </div>
 <div class="row g-4 mt-1">
     <div class="col-12">
@@ -70,11 +77,23 @@
 </div>
 <div class="card shadow-sm p-4 mt-4">
     <table class="table table-striped">
-        <thead><tr><th>Type</th><th>Date</th><th>Category</th><th>Amount</th><th>Description</th></tr></thead>
+        <thead><tr><th>Type</th><th>Date</th><th>Category</th><th>Amount</th><th>Description</th><th class="no-print">Action</th></tr></thead>
         <tbody>
-            {% for income in incomes %}<tr><td>Income</td><td>{{ income.date }}</td><td>{{ income.category.name }}</td><td>{{ income.currency_symbol }}{{ income.amount }}</td><td>{{ income.description }}</td></tr>{% endfor %}
-            {% for expense in expenses %}<tr><td>Expense</td><td>{{ expense.date }}</td><td>{{ expense.category.name }}</td><td>{{ expense.currency_symbol }}{{ expense.amount }}</td><td>{{ expense.description }}</td></tr>{% endfor %}
+            {% for income in incomes %}<tr><td>Income</td><td>{{ income.date }}</td><td>{{ income.category.name }}</td><td>{{ income.currency_symbol }}{{ income.amount }}</td><td>{{ income.description }}</td><td class="no-print"><a href="{% url 'invoice' 'income' income.pk %}" class="btn btn-sm btn-light">Invoice</a></td></tr>{% endfor %}
+            {% for expense in expenses %}<tr><td>Expense</td><td>{{ expense.date }}</td><td>{{ expense.category.name }}</td><td>{{ expense.currency_symbol }}{{ expense.amount }}</td><td>{{ expense.description }}</td><td class="no-print"><a href="{% url 'transaction_slip' 'expense' expense.pk %}" class="btn btn-sm btn-light">Slip</a></td></tr>{% endfor %}
         </tbody>
     </table>
 </div>
+<script type="application/json" id="report-months">{{ chart_months|safe }}</script>
+<script type="application/json" id="report-expenses">{{ chart_expenses|safe }}</script>
+<script type="application/json" id="report-category-labels">{{ chart_category_labels|safe }}</script>
+<script type="application/json" id="report-category-values">{{ chart_category_values|safe }}</script>
+<script>
+const reportData = (id) => JSON.parse(document.getElementById(id).textContent || '[]');
+if (window.Chart) {
+    new Chart(document.getElementById('reportTrendChart'), {type: 'bar', data: {labels: reportData('report-months'), datasets: [{label: 'Expenses', data: reportData('report-expenses'), backgroundColor: '#d34d63', borderRadius: 5}]}, options: {responsive: true, maintainAspectRatio: false, plugins: {legend: {display: false}}, scales: {y: {beginAtZero: true}}}});
+    new Chart(document.getElementById('reportCategoryChart'), {type: 'doughnut', data: {labels: reportData('report-category-labels'), datasets: [{data: reportData('report-category-values'), backgroundColor: ['#1455c9','#35a7e9','#16865b','#ffbd38','#d34d63','#8c6de9']}]}, options: {responsive: true, maintainAspectRatio: false}});
+}
+</script>
+<style>@media print {.no-print, .site-nav, .tour-backdrop, .tour-card {display:none !important;} .app-content {max-width:none;} .card {box-shadow:none !important;}}</style>
 {% endblock %}

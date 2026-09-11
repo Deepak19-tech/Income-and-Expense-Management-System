@@ -1,5 +1,6 @@
 from django.contrib.auth.models import AbstractUser
 from django.core.exceptions import ValidationError
+from django.core.validators import RegexValidator
 from django.db import models
 
 from .validators import validate_com_email
@@ -21,7 +22,12 @@ class Account(models.Model):
     ACCOUNT_TYPES = (('cash', 'Cash'), ('bank', 'Bank account'), ('wallet', 'Digital wallet'), ('card', 'Credit card'))
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='accounts')
     name = models.CharField(max_length=100)
-    account_number = models.CharField(max_length=16, blank=True, error_messages={'max_length': 'Account number must contain exactly 16 digits.'})
+    account_number = models.CharField(
+        max_length=16,
+        blank=False,
+        validators=[RegexValidator(r'^\d{16}$', 'Account number must contain exactly 16 digits.')],
+        error_messages={'max_length': 'Account number must contain exactly 16 digits.'},
+    )
     type = models.CharField(max_length=12, choices=ACCOUNT_TYPES, default='bank')
     opening_balance = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     currency = models.CharField(max_length=10, default='USD')
